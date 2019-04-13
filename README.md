@@ -1,0 +1,2 @@
+# nnc
+neural network ctest 
