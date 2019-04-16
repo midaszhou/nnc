@@ -1,7 +1,7 @@
 
 
 nnc:	nnc.c
-	gcc nnc.c -o nnc
+	gcc nnc.c -lm -o nnc
 
 clean:
 	rm -rf *.o nnc
