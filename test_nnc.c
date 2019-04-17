@@ -3,7 +3,10 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License version 2 as
 published by the Free Software Foundation.
 
+
+
 Midas Zhou
+midaszhou@yahoo.com
 -----------------------------------------------------------------------*/
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +17,7 @@ Midas Zhou
 #include "nnc.h"
 
 
-#define ERR_LIMIT	0.00001
+#define ERR_LIMIT	0.0001
 
 int main(void)
 {
@@ -22,10 +25,13 @@ int main(void)
 	int i,j;
 	int count=0;
 
-	int wh_cells=3; /* wh layer cell number */
-	int wo_cells=1; /* wo layer cell number */
-	int wh_inputs=3; /* number of input data for each input/hidden nvcell */
-	int wo_inputs=3; /* number of input data for each output nvcell */
+	int wi_cellnum=3; /* wi layer cell number */
+	int wm_cellnum=3; /* wm layer cell number */
+	int wo_cellnum=1; /* wo layer cell number */
+
+	int wi_inpnum=3; /* number of input data for each input/hidden nvcell */
+	int wm_inpnum=3; /* number of input data for each middle nvcell */
+	int wo_inpnum=3; /* number of input data for each output nvcell */
 
 	double err;
 	int ns=8; /* input sample number + teacher value */
@@ -46,25 +52,28 @@ int main(void)
 	double data_input[3];
 
 
-while(1)  {  /* test while */
+//while(1)  {  /* test while */
 
 
 /*  <<<<<<<<<<<<<<<<<  Create Neuron Net >>>>>>>>>>>>>  */
-	/* 1. creat an input template nvcell */
-	NVCELL *wh_tempcell=new_nvcell(wh_inputs,NULL,data_input,NULL,0,func_sigmoid); /* input cell */
-	nvcell_rand_dwv(wh_tempcell);
-	/* create wh(input) layer */
-        NVLAYER *wh_layer=new_nvlayer(wh_cells,wh_tempcell);
+	/* 1. creat an input nvlayer */
+	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0,func_sigmoid); /* input cell */
+	nvcell_rand_dwv(wi_tempcell);
+        NVLAYER *wi_layer=new_nvlayer(wi_cellnum,wi_tempcell);
 
-	/* 2. creat an output template nvcell */
-	NVCELL *wo_tempcell=new_nvcell(wo_inputs, wh_layer->nvcells, NULL,NULL,0,func_sigmoid); /* input cell */
+	/* 2. creat a mid nvlayer */
+	NVCELL *wm_tempcell=new_nvcell(wm_inpnum,wi_layer->nvcells,NULL,NULL,0,func_sigmoid); /* input cell */
+	nvcell_rand_dwv(wm_tempcell);
+        NVLAYER *wm_layer=new_nvlayer(wm_cellnum,wm_tempcell);
+
+	/* 3. creat an output nvlayer */
+	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wm_layer->nvcells, NULL,NULL,0,func_sigmoid); /* input cell */
 	nvcell_rand_dwv(wo_tempcell);
-	/* create wo(output) layer */
-        NVLAYER *wo_layer=new_nvlayer(wo_cells,wo_tempcell);
+        NVLAYER *wo_layer=new_nvlayer(wo_cellnum,wo_tempcell);
 
 
 /*  <<<<<<<<<<<<<<<<<  NNC Learning Process  >>>>>>>>>>>>>  */
-	nnc_set_param(5.0); /* set learn rate */
+	nnc_set_param(2.0); /* set learn rate */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
@@ -79,17 +88,20 @@ while(1)  {  /* test while */
 			/* 1. update data_input */
 			memcpy(data_input, pin+4*i,3*sizeof(double));
 
-			/* 2. feed forward wh,wo layer */
-			nvlayer_feed_forward(wh_layer);
+			/* 2. feed forward wi->wm->wo layer */
+			nvlayer_feed_forward(wi_layer);
+			nvlayer_feed_forward(wm_layer);
 			nvlayer_feed_forward(wo_layer);
 
 			/* 3. get err sum up */
 			err += (wo_layer->nvcells[0]->dout - pin[3+i*4])
 				 * (wo_layer->nvcells[0]->dout - pin[3+i*4]);
 
-			/* 4. feed backward wo,wh layer, and update model params */
+			/* 4. feed backward wo->wm->wi, and update model params */
 			nvlayer_feed_backward(wo_layer,pin+(3+i*4));
-		        nvlayer_feed_backward(wh_layer,NULL);
+		        nvlayer_feed_backward(wm_layer,NULL);
+		        nvlayer_feed_backward(wi_layer,NULL);
+
 		}
 		count++;
 
@@ -105,32 +117,35 @@ while(1)  {  /* test while */
 	for(i=0;i<ns;i++)
     	{
 		/* update data_input */
-		memcpy(data_input, pin+4*i,wh_inputs*sizeof(double));
+		memcpy(data_input, pin+4*i,wi_inpnum*sizeof(double));
 
-		/* feed forward wh,wo layer */
-		nvlayer_feed_forward(wh_layer);
+		/* feed forward wi->wm->wo layer */
+		nvlayer_feed_forward(wi_layer);
+		nvlayer_feed_forward(wm_layer);
 		nvlayer_feed_forward(wo_layer);
 
 		/* print result */
 		printf("Input: ");
-		for(j=0;j<wh_inputs;j++)
+		for(j=0;j<wi_inpnum;j++)
 			printf("%lf ",data_input[j]);
 		printf("\n");
 		printf("output: %lf \n",wo_layer->nvcells[0]->dout);
 	}
 
 
-/*  <<<<<<<<<<<<<<<<<  Destroy NN  >>>>>>>>>>>>>  */
+/*  <<<<<<<<<<<<<<<<<  Destroy NN Model >>>>>>>>>>>>>  */
 
-	free_nvcell(wh_tempcell);
+	free_nvcell(wi_tempcell);
+	free_nvcell(wm_tempcell);
 	free_nvcell(wo_tempcell);
 
-	free_nvlayer(wh_layer);
+	free_nvlayer(wi_layer);
+	free_nvlayer(wm_layer);
 	free_nvlayer(wo_layer);
 
 	usleep(100000);
 
-} /* end test while */
+//} /* end test while */
 
 	return 0;
 }

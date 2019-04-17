@@ -26,6 +26,7 @@ a single neural cell with N inputs:
 
 
 Midas Zhou
+midaszhou@yahoo.com
 -----------------------------------------------------------------------*/
 #include "nnc.h"
 #include <stdio.h>
