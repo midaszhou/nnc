@@ -27,24 +27,207 @@ a single neural cell with N inputs:
 
 Midas Zhou
 -----------------------------------------------------------------------*/
-#include "nnc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
-#include <sys/time.h>
 
+#define DERIVATIVE_FUNC	1  /* to switch to derivative calculation in a function */
+#define NORMAL_FUNC	0
 
-static double dlrate=5.0;       /* learning rate for all nvcells */
+double dlrate=10.0;	/* learning rate for all nvcells */
 
-
-/*--------------------------------------
- * set parameters for NNC
---------------------------------------*/
-void  nnc_set_param(double learn_rate)
+typedef struct nerve_cell NVCELL; 	/* neuron, or nerve cell */
+/*
+ * 1. If incells==NULL, then it's an input cell.
+ *
+ */
+struct nerve_cell
 {
-	dlrate=learn_rate;
+	int nin; 	/* number of dendrite receivers */
+	NVCELL * const *incells; /* array of input cells, whose outputs are inputs for this cell
+				  Only a pointer, will NOT allocate mem space. */
+	double *din; 	/* array of input data, mem space to be allocated. */
+	double *dw;  	/* array of weights, mem sapce to be allocated */
+	double dv;	/* bias value, dsum - dv */
+	double dsum;	/* dh, sum of x1*w1+x2*w2+x3*w3+....+xn*wn  ? -dv */
+	double (*transfunc)(double,int); /* pointer to a transfer function (also include derivative part) */
+//	double (*dev_transfunc)(double); /* pointer to the derivative function of the transfunc */
+	double dout;	/* dz, output value, dout=transfunc(dsum-dv) */
+	double derr;	/* error(loss) or error(loss) value back feeded(back propagated) from the next layer cell */
+};
+
+typedef struct nerve_layer NVLAYER;
+struct nerve_layer
+{
+	int nc;		/* number of NVCELL in the layer */
+	NVCELL * *nvcells;	/* array of nerve cells in the layer */
+};
+
+
+typedef struct nerve_net NVNET;
+struct nerve_net
+{
+	int nlayer;		/* number of NVLAYER in the net */
+	NVLAYER *nvlayers;       /*  array of nervers for the net */
+};
+
+
+/* Function declaration */
+NVCELL * new_nvcell( unsigned int nin, const NVCELL **incells,
+				double *din, double *dw, double bias, double (*transfer)(double, int ) );
+void free_nvcell(NVCELL *ncell);
+int nvcell_rand_dwv(NVCELL *ncell);
+int nvcell_feed_forward(NVCELL *nvcell);
+int nvcell_feed_backward(NVCELL *nvcell, const double *tv);
+int nvcell_input_data(NVCELL *cell, double *data);
+
+
+NVLAYER *new_nvlayer(int nc, NVCELL **cells);
+void free_nvlayer(NVLAYER *layer);
+
+
+double func_step(double u, int token);
+double func_sigmoid(double u, int token);
+
+double random_btwone(void);
+
+
+/*-----------------------------
+	MAIN FUNCTION
+-----------------------------*/
+int main(void)
+{
+	#define ERR_LIMIT	0.001
+
+	int i,j;
+	int count=0;
+
+	int num_incells=3;
+	int num_outcells=1;
+
+	int wh_inputs=3; /* number of input data for each input/hidden nvcell */
+	int wo_inputs=3; /* number of input data for each output nvcell */
+
+	double err;
+int ns=8; /* input sample number + teacher value */
+double pin[8][4]= /* 3 input + 1 teacher value */
+{
+1,1,1,1,
+1,1,0,1,
+1,0,1,1,
+1,0,0,0,
+0,1,1,1,
+0,1,0,0,
+0,0,1,0,
+0,0,0,0,
+};
+
+
+
+//while(1)  {  /* test while */
+
+	/* INPUT CELLS */
+	NVCELL *ncell_wh1=new_nvcell(wh_inputs,NULL,NULL,NULL,0,func_sigmoid); /* input cell */
+	NVCELL *ncell_wh2=new_nvcell(wh_inputs,NULL,NULL,NULL,0,func_sigmoid); /* input cell */
+	NVCELL *ncell_wh3=new_nvcell(wh_inputs,NULL,NULL,NULL,0,func_sigmoid); /* input cell */
+	/* init dw dv */
+	nvcell_rand_dwv(ncell_wh1);
+	nvcell_rand_dwv(ncell_wh2);
+	nvcell_rand_dwv(ncell_wh3);
+
+	/* OUTPUT CELLS */
+	NVCELL **incells=calloc(num_incells,sizeof(NVCELL *));
+	incells[0]=ncell_wh1;
+	incells[1]=ncell_wh2;
+	incells[2]=ncell_wh3;
+	NVCELL *ncell_wo=new_nvcell(wo_inputs,incells,NULL,NULL,0,func_sigmoid); /* output cell */
+	/* init dw dv */
+	nvcell_rand_dwv(ncell_wo);
+
+
+
+
+  err=10.0;
+  while(err>ERR_LIMIT)
+  {
+	err=0.0;
+	/* test data learning */
+	for(i=0;i<ns;i++)
+    	{
+
+		/* feed data to input_cells directly  */
+		nvcell_input_data(ncell_wh1, &pin[0][0]+(wh_inputs+1)*i); /* +1 as teacher value */
+		nvcell_input_data(ncell_wh2, &pin[0][0]+(wh_inputs+1)*i);
+		nvcell_input_data(ncell_wh3, &pin[0][0]+(wh_inputs+1)*i);
+
+		/* feed forward: hidden layer */
+		nvcell_feed_forward(ncell_wh1);
+		nvcell_feed_forward(ncell_wh2);
+		nvcell_feed_forward(ncell_wh3);
+
+		/* feed forward: output layer */
+		nvcell_feed_forward(ncell_wo);
+		printf("nnc output: %f \n",ncell_wo->dout);
+
+		/* err sumup */
+		err += (ncell_wo->dout-pin[i][3])*(ncell_wo->dout-pin[i][3]);
+
+		/* dw dv learning */
+		nvcell_feed_backward(ncell_wo,&pin[0][0]+(wh_inputs+1)*i+3);
+		nvcell_feed_backward(ncell_wh1,NULL);
+		nvcell_feed_backward(ncell_wh2,NULL);
+		nvcell_feed_backward(ncell_wh3,NULL);
+	}
+	count++;
+
+	printf("-------- %dth learning, err=%lf -------\n",count, err);
+
+  }
+
+	/* test learned NNC model */
+	for(i=0;i<ns;i++)
+    	{
+
+		printf("------------- after learning -------------\n");
+		/* feed data to input_cells directly  */
+		nvcell_input_data(ncell_wh1, &pin[0][0]+(wh_inputs+1)*i); /* +1 as teacher value */
+		nvcell_input_data(ncell_wh2, &pin[0][0]+(wh_inputs+1)*i);
+		nvcell_input_data(ncell_wh3, &pin[0][0]+(wh_inputs+1)*i);
+
+		/* feed forward: hidden layer */
+		nvcell_feed_forward(ncell_wh1);
+		nvcell_feed_forward(ncell_wh2);
+		nvcell_feed_forward(ncell_wh3);
+
+		/* feed forward: output layer */
+		nvcell_feed_forward(ncell_wo);
+
+		/* print result */
+		printf("Input: ");
+		for(j=0;j<wh_inputs;j++) {
+			printf("%lf, ",pin[i][j]);
+		}
+		printf("\n");
+		printf("output: %lf \n",ncell_wo->dout);
+	}
+
+
+	/* free all */
+	free_nvcell(ncell_wh1);
+	free_nvcell(ncell_wh2);
+	free_nvcell(ncell_wh3);
+	free_nvcell(ncell_wo);
+	free(incells);
+
+	usleep(50000);
+
+//} /* end test while */
+
+
+	return 0;
 }
+
 
 
 ///////////////////////////     Nerve Cell/Layer/Net Concept     ///////////////////////
@@ -75,20 +258,21 @@ NVCELL * new_nvcell( unsigned int nin, const NVCELL **incells,
 
 	/* calloc ncell->din and dw */
 	NVCELL *ncell=calloc(1,sizeof(NVCELL));
-	if(ncell==NULL) {
-		printf("Init a new NCELL: fail to calloc ncell.\n");
+	if(ncell==NULL)
 		return NULL;
-	}
-	ncell->dw=calloc(nin,sizeof(double));
-	if(ncell->dw==NULL) {
-		printf("Init a new NCELL: fail to calloc dw.\n");
+	ncell->din=calloc(2*nin,sizeof(double));
+	if(ncell->din==NULL) {
+		printf("Init a new NCELL: fail to calloc() din and dw.\n");
 		free(ncell);
-		return NULL;
 	}
+	ncell->dw=ncell->din+nin; /* din and dw have same size of mem space */
 
 	/* assign din and dw, or leave it for later assignment  */
 	if(din !=NULL) {
-		ncell->din=din; /* pass only a pointer to din */
+		for(i=0;i<nin;i++) {
+			ncell->din[i]=din[i];
+			printf("din[%d]=%f \n",i, ncell->din[i]);
+		}
 	}
 	if(dw !=NULL) {
 		for(i=0;i<nin;i++) {
@@ -115,11 +299,14 @@ void free_nvcell(NVCELL *ncell)
 {
 	if(ncell==NULL) return;
 
-	if(ncell->dw != NULL)
-		free(ncell->dw);
-
+	/* NOTE: din and dw have same size of mem space,
+         * so we alloc them together, and free one only!!!
+	 */
+	if(ncell->din != NULL)
+		free(ncell->din);
+	//if(ncell->dw != NULL)
+	//	free(ncell->dw);
 	free(ncell);
-
 	ncell=NULL;
 }
 
@@ -134,11 +321,9 @@ int nvcell_rand_dwv(NVCELL *ncell)
 	if(ncell==NULL || ncell->dw==NULL)
 		return -1;
 
-	/* random dw */
+	/* random dw and dv */
 	for(i=0; i < ncell->nin; i++)
 		ncell->dw[i]=random_btwone();
-
-	/* random dv */
 	ncell->dv=random_btwone();
 
 	return 0;
@@ -253,7 +438,7 @@ double func_step(double u, int token)
  * Params:
  * 	@u	input param for function;
  *		if token==0:  param for sigmoid f(u)
- *		if token!=0:  f'(u)=o(1-o), where o=f(u)  NOT o=u!!!!!!
+ *		if token!=0:  f'(u)=u(1-u) !!!!!!
  *	@token	0 ---normal func; 1 ---derivative func
  * Return:
  *		a double.
@@ -264,9 +449,7 @@ double func_sigmoid(double u, int token)
    if(token==NORMAL_FUNC) {
 	return 1.0/(1.0+exp(-u));
    }
-   /* if DERIVATIVE_FUNC Derivative func
-    * Note: input of f'(u) is f(u), NOT u!!
-    */
+   /* if DERIVATIVE_FUNC Derivative func*/
    else  {
 	return u*(1-u);
   }
@@ -291,32 +474,19 @@ int nvcell_feed_forward(NVCELL *nvcell)
 	if(nvcell==NULL || nvcell->transfunc==NULL)
 			return -1;
 
-	/* 1. reset dsum every time before feedforward */
-	nvcell->dsum=0;
+	/* 1. get input data from a nvcell output */
+	if(nvcell->incells != NULL) {
+		for(i=0; i < nvcell->nin; i++) {
+			nvcell->din[i]=nvcell->incells[i]->dout;
+//			printf("din from incells: din[%d]=%f \n",i,nvcell->din[i]);
+		}
+	}
+	/* 1. ELSE:  use nvcell->din[] as input data */
 
 	/* 2. Calculate sum of Xn*Wn */
-	/* 2.1 Get input from a data array */
-	if(nvcell->din != NULL) {
-		for(i=0; i < nvcell->nin; i++) {
-			nvcell->dsum += (nvcell->din[i]) * (nvcell->dw[i]);
-		}
-	}
-	/* 2.2 OR, get data from ahead nvcells' output */
-	else if( nvcell->incells !=NULL ) {
-		/* check data */
-		if(nvcell->incells[0]==NULL) {
-			printf("%s: nvcell->incells[x] unavailable! \n",__func__);
-			return -2;
-		}
-
-		for(i=0; i < nvcell->nin; i++) {
-			nvcell->dsum += (nvcell->incells[i]->dout) * (nvcell->dw[i]);
-		}
-	}
-	/* 2.3 OR, input data unavailable ! */
-	else {
-		printf("%s: input data unavailable!\n",__func__);
-		return -3;
+	nvcell->dsum=0; /* reset dsum */
+	for(i=0; i < nvcell->nin; i++) {
+		nvcell->dsum += (nvcell->din[i]) * (nvcell->dw[i]);
 	}
 //	printf(" dsum=%f, dv=%f \n",nvcell->dsum, nvcell->dv);
 
@@ -350,46 +520,31 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 			return -1;
 
         /* 1. calculate error/loss */
-	/* if it's output nvcell */
+	/* if output nvcell */
 	if(tv !=NULL )
  	{
-  /* ---- LOSS FUNCTION for output nvcell : loss=(t-y)*f'(y) */
+     /* ---- LOSS FUNCTION for output nvcell : loss=(t-y)*f'(y) */
 		nvcell->derr=(*tv - nvcell->dout) * (nvcell->transfunc(nvcell->dout,DERIVATIVE_FUNC));
 	}
-	/* else if it's non_output nvcell */
+	/* else if non_output nvcell */
 	else
 	{
-  /* ---- LOSS FUNCTION for NON_output nvcell : loss=derr*f'(y) */
+     /* ---- LOSS FUNCTION for NON_output nvcell : loss=derr*f'(y) */
 		/* assume that derr has already been feeded backed from the next layer */
 		nvcell->derr= nvcell->derr * (nvcell->transfunc(nvcell->dout,DERIVATIVE_FUNC));
 	}
 
-//	printf("%s,--- update dw and v --- \n",__func__);
-
 	/* 2. update weight by learning */
-	/* 2.1 If NOT input nvcells,  din is ahead nvcell's dout */
-	if( nvcell->incells !=NULL && nvcell->incells[0] != NULL) {
-		/* update dw */
-		for(i=0; i< nvcell->nin; i++) {
-			nvcell->dw[i] += dlrate*(nvcell->incells[i]->dout)*(nvcell->derr); /* already put previout output in din[] */
-		/* 3. feed back loss to previous nvcell */
-   /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr=dw[x]*derr */
-			nvcell->incells[i]->derr = (nvcell->dw[i])*(nvcell->derr);
-		}
-	}
+	//printf("%s,--- update dw and v --- \n",__func__);
+	for(i=0; i< nvcell->nin; i++) {
+		nvcell->dw[i] += dlrate*(nvcell->din[i])*(nvcell->derr); /* already put previout output in din[] */
 
-	/* 2.2 ELSE: assume its an input nvcell, get din directly. */
-	else if(nvcell->din !=NULL) {
-		/* update dw */
-		for(i=0; i< nvcell->nin; i++) {
-			nvcell->dw[i] += dlrate*(nvcell->din[i])*(nvcell->derr); /* already put previout output in din[] */
-		}
-	}
+		/* 3. feed back loss to previous nvcell, if it's NOT input nvcells! */
+		if( nvcell->incells !=NULL && nvcell->incells[i] != NULL) {
 
-	/* 2.3 Data error */
-	else {
-		printf("%s: nvcell->incells[x] and din[x] invalid!\n",__func__);
-		return -2;
+     /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr=dw[x]*derr */
+			(nvcell->incells[i])->derr = (nvcell->dw[i])*(nvcell->derr);
+		}
 	}
 
 	/* 4. update bias value by learning */
@@ -435,7 +590,7 @@ int nvcell_get_loss(NVNET *nnet, double tv)
 
 
 /*------------------------------------------------------
- * Pass a pointer of data array to nvcell->din.
+ *	A feed forward function for a nerve cell.
  * Params:
  * 	@cell		a nerve cell;
  *	@data		array of input data for cell.din
@@ -445,16 +600,17 @@ int nvcell_get_loss(NVNET *nnet, double tv)
 -------------------------------------------------------*/
 int  nvcell_input_data(NVCELL *cell, double *data)
 {
+	int i;
+
 	/* check input */
-	if( cell==NULL || data==NULL )
-		return -1;
+	if( cell==NULL || cell->din==NULL || data==NULL )
+			return -1;
 
-//	if( cell->din !=NULL) {
-//		printf("%s: WARNING!  nvcell->din is NOT empty!\n",__func__);
-//	}
-
-	/* set input data */
-	cell->din = data;
+	/* input data */
+	for(i=0; i < cell->nin; i++) {
+		cell->din[i] = data[i];
+		//printf("din[%d]=%f \n",i,cell->din[i]);
+	}
 
 	return 0;
 }
