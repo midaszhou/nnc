@@ -15,6 +15,9 @@ Midas Zhou
 
 
 typedef struct nerve_cell NVCELL; 	/* neuron, or nerve cell */
+typedef struct nerve_layer NVLAYER;
+typedef struct nerve_net NVNET;
+
 struct nerve_cell
 {
 	int nin; 	/* number of dendrite receivers */
@@ -29,7 +32,6 @@ struct nerve_cell
 	double derr;	/* error(loss) or error(loss) value back feeded(back propagated) from the next layer cell */
 };
 
-typedef struct nerve_layer NVLAYER;
 struct nerve_layer
 {
 	int nc;		/* number of NVCELL in the layer */
@@ -37,7 +39,6 @@ struct nerve_layer
 };
 
 
-typedef struct nerve_net NVNET;
 struct nerve_net
 {
 	int nlayer;		/* number of NVLAYER in the net */
@@ -45,9 +46,8 @@ struct nerve_net
 };
 
 
-
 /* Function declaration */
-NVCELL * new_nvcell( unsigned int nin, const NVCELL **incells,
+NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
 				double *din, double *dw, double bias, double (*transfer)(double, int ) );
 void free_nvcell(NVCELL *ncell);
 int nvcell_rand_dwv(NVCELL *ncell);
@@ -55,8 +55,12 @@ int nvcell_feed_forward(NVCELL *nvcell);
 int nvcell_feed_backward(NVCELL *nvcell, const double *tv);
 int nvcell_input_data(NVCELL *cell, double *data);
 
-NVLAYER *new_nvlayer(int nc, NVCELL **cells);
+
+NVLAYER *new_nvlayer(int nc, const NVCELL *template_cell);
 void free_nvlayer(NVLAYER *layer);
+int nvlayer_feed_forward(NVLAYER *layer);
+int nvlayer_feed_backward(NVLAYER *layer, double *tv);
+
 
 void  nnc_set_param(double learn_rate);
 double func_step(double u, int token);

@@ -62,7 +62,7 @@ void  nnc_set_param(double learn_rate)
  *	pointer to a NCELL ...  OK
  *	NULL		   ...  fails
 -------------------------------------------------------------------------*/
-NVCELL * new_nvcell( unsigned int nin, const NVCELL **incells,
+NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
 				double *din, double *dw, double bias, double (*transfer)(double,int ) )
 {
 	int i;
@@ -146,19 +146,21 @@ int nvcell_rand_dwv(NVCELL *ncell)
 
 
 
-/*--------------------------------------------
+/*-----------------------------------------------
  * Note:
- *	create a new nerve layer.
+ *	1. Create a new nerve layer with nc nvcells inside.
+ *	2. All nvcells of the nvlayer are copied from the template_cell
+ *	   so they have same param set inside.
  * Params:
  * 	@nc	number of nerve cells in the layer;
- *	@cells	array of pointers to nerve cells, if NULL, nerve cells of the layer will be defined later.
+ *	@template_cell	a template cell for layer->nvcells.
  * Return:
- *	pointer to NVCELL	OK
+ *	pointer to NVLAYER	OK
  *	NULL			fails
----------------------------------------------*/
-NVLAYER *new_nvlayer(int nc, NVCELL **cells)
+--------------------------------------------------*/
+NVLAYER *new_nvlayer(int nc, const NVCELL *template_cell)
 {
-	int i;
+	int i,j;
 
 	/* check input param */
 	if(nc==0 ) {
@@ -166,8 +168,13 @@ NVLAYER *new_nvlayer(int nc, NVCELL **cells)
 		return NULL;
 	}
 
+	if( template_cell ==NULL ) {
+		printf("Init a new NVLAYER: template cell is NULL.\n");
+		return NULL;
+	}
+
 	/* calloc NVLAYER */
-	NVLAYER *layer=calloc(1, sizeof(NVCELL));
+	NVLAYER *layer=calloc(1,sizeof(NVLAYER));
 	if(layer==NULL)
 		return NULL;
 
@@ -178,14 +185,24 @@ NVLAYER *new_nvlayer(int nc, NVCELL **cells)
 		return NULL;
 	}
 
-	/* assign nc,  and nvcells if not NULL */
+	/* assign nc */
 	layer->nc=nc;
-	if(cells != NULL) {
-		for(i=0;i<nc;i++) {
-			if( cells[i] != NULL )
-				layer->nvcells[i]=cells[i];
-			else
-				printf("Init a new NVLAYER: warning!!! input cells[%d] is NULL!\n",i);
+
+	/* create nvcells as per template_cell */
+	for(i=0;i<nc;i++) {
+		layer->nvcells[i]=new_nvcell( template_cell->nin, template_cell->incells,
+					      template_cell->din,template_cell->dw, template_cell->dv,
+					      template_cell->transfunc
+					);
+		/* if fail, release all */
+		if(layer->nvcells[i]==NULL) {
+				printf("Init a new NVLAYER: fail to create new_nvcell!.\n");
+				for(j=0;j<i;j++)
+					free_nvcell(layer->nvcells[j]);
+				free(layer->nvcells);
+				free(layer);
+
+				return NULL;
 		}
 	}
 
@@ -212,7 +229,7 @@ void free_nvlayer(NVLAYER *layer)
 	/* else if nvcells is not NULL */
 	for(i=0; i < layer->nc; i++) {
 		if(layer->nvcells[i] != NULL)
-			free(layer->nvcells[i]);
+			free_nvcell(layer->nvcells[i]);
 	}
 
 	free(layer);
@@ -394,6 +411,65 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 
 	/* 4. update bias value by learning */
 	nvcell->dv += dlrate*(-1.0)*(nvcell->derr); /* bias deemed as a special kind of weight, with din[x]=-1 */
+
+	return 0;
+}
+
+
+
+/*----------------------------------------------
+ * Note:
+ *	A feed forward function for a nerve layer.
+ * Params:
+ * 	@layer	a nerve layer;
+ * Return:
+ *		0	OK
+ *		<0	fails
+-----------------------------------------------*/
+int nvlayer_feed_forward(NVLAYER *layer)
+{
+	int i;
+	int ret;
+
+	/* check layer */
+	if(layer==NULL || layer->nvcells==NULL)
+		return -1;
+
+	/* feed forward all nvcells in the layer */
+	for(i=0; i< layer->nc; i++) {
+		ret=nvcell_feed_forward(layer->nvcells[i]);
+		if(ret !=0) return ret;
+	}
+
+	return 0;
+}
+
+
+/*----------------------------------------------
+ * Note:
+ *	A feed forward function for a nerve layer.
+ * Params:
+ * 	@layer	a nerve layer;
+ *	@tv		a teacher's value of output nvcells;
+ *			NULL for non_output nvcells
+ * Return:
+ *		0	OK
+ *		<0	fails
+-----------------------------------------------*/
+int nvlayer_feed_backward(NVLAYER *layer, double *tv)
+{
+	int i;
+	int ret;
+
+	/* check layer */
+	if(layer==NULL || layer->nvcells==NULL)
+		return -1;
+
+	/* feed forward all nvcells in the layer */
+	for(i=0; i< layer->nc; i++) {
+		ret=nvcell_feed_backward(layer->nvcells[i],tv);
+		if(ret !=0) return ret;
+	}
 
 	return 0;
 }
