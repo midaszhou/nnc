@@ -4,6 +4,11 @@ it under the terms of the GNU General Public License version 2 as
 published by the Free Software Foundation.
 
 
+Some hints:
+1. As number of layers increases, learn rate shall be smaller.
+2. Simple minds learn simple things.
+
+
 
 Midas Zhou
 midaszhou@yahoo.com
@@ -15,9 +20,9 @@ midaszhou@yahoo.com
 //#include <sys/time.h>
 #include <string.h>
 #include "nnc.h"
+#include "actfs.h"
 
-
-#define ERR_LIMIT	0.0001
+#define ERR_LIMIT	0.001
 
 int main(void)
 {
@@ -37,6 +42,7 @@ int main(void)
 	int ns=8; /* input sample number + teacher value */
 
 	double pin[8*4]= /* 3 input + 1 teacher value */
+#if 0 /* when [0]+[1]+[2]>=2, output [3]=1 */
 {
 1,1,1,1,
 1,1,0,1,
@@ -47,6 +53,20 @@ int main(void)
 0,0,1,0,
 0,0,0,0,
 };
+#endif
+
+#if 1 /* Logic: [3]=(-1)^([0]+[1]+[2]) */
+{
+1,1,1,-1,
+1,1,0,1,
+1,0,1,1,
+1,0,0,-1,
+0,1,1,1,
+0,1,0,-1,
+0,0,1,-1,
+0,0,0,1,
+};
+#endif
 
 
 	double data_input[3];
@@ -57,23 +77,24 @@ int main(void)
 
 /*  <<<<<<<<<<<<<<<<<  Create Neuron Net >>>>>>>>>>>>>  */
 	/* 1. creat an input nvlayer */
-	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0,func_sigmoid); /* input cell */
+	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0,func_TanSigmoid);//PReLU);//func_TanSigmoid); /* input cell */
 	nvcell_rand_dwv(wi_tempcell);
         NVLAYER *wi_layer=new_nvlayer(wi_cellnum,wi_tempcell);
 
 	/* 2. creat a mid nvlayer */
-	NVCELL *wm_tempcell=new_nvcell(wm_inpnum,wi_layer->nvcells,NULL,NULL,0,func_sigmoid); /* input cell */
+	NVCELL *wm_tempcell=new_nvcell(wm_inpnum,wi_layer->nvcells,NULL,NULL,0,func_TanSigmoid);//sigmoid); /* input cell */
 	nvcell_rand_dwv(wm_tempcell);
         NVLAYER *wm_layer=new_nvlayer(wm_cellnum,wm_tempcell);
 
 	/* 3. creat an output nvlayer */
-	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wm_layer->nvcells, NULL,NULL,0,func_sigmoid); /* input cell */
+	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wm_layer->nvcells, NULL,NULL,0,func_TanSigmoid);//ReLU);//sigmoid); /* input cell */
+//	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wi_layer->nvcells, NULL,NULL,0,func_PReLU);//func_sigmoid); /* input cell */
 	nvcell_rand_dwv(wo_tempcell);
         NVLAYER *wo_layer=new_nvlayer(wo_cellnum,wo_tempcell);
 
 
 /*  <<<<<<<<<<<<<<<<<  NNC Learning Process  >>>>>>>>>>>>>  */
-	nnc_set_param(2.0); /* set learn rate */
+	nnc_set_param(0.02); /* set learn rate */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
@@ -108,6 +129,7 @@ int main(void)
 		if( (count&255) == 0)
 			printf("	%dth learning, err=%0.8f \n",count, err);
   	}
+
 	printf("	%dth learning, err=%0.8f \n",count, err);
 	printf("Finish %d times batch learning!. \n\n",count);
 

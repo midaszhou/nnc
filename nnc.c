@@ -15,20 +15,30 @@ Glossary/Concept:
 dlrate:	learning rate
 
 
+TODO:
+1. Store and deploy model.
+
 Note:
-a single neural cell with N inputs:
+1. a single neural cell with N inputs:
 	1. Input:	 x1,x2,x3,.....xn
 	2. Weigths:	 w1,w2,w3,.....wn
 	3. Bias:	 bias value
 	4. sum up:	 u=x1*w1+x2*w2+x3*w3+....+xn*wn -bias
-	5. transfer function: f(u)
-	6. output:	Z=f(u)
+
+	5. transfer function:   f(u)
+
+	6. activation output:	Z=f(u)
+
+2. Sometimes the err increases monotonously and NERVER converge, it's
+   necessary to observe such condition and reset weights and bias
+   for all cells.
 
 
 Midas Zhou
 midaszhou@yahoo.com
 -----------------------------------------------------------------------*/
 #include "nnc.h"
+#include "actfs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -36,7 +46,7 @@ midaszhou@yahoo.com
 #include <sys/time.h>
 
 
-static double dlrate=5.0;       /* learning rate for all nvcells */
+static double dlrate=20.0;       /* learning rate for all nvcells */
 
 
 /*--------------------------------------
@@ -64,7 +74,7 @@ void  nnc_set_param(double learn_rate)
  *	NULL		   ...  fails
 -------------------------------------------------------------------------*/
 NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
-				double *din, double *dw, double bias, double (*transfer)(double,int ) )
+				double *din, double *dw, double bias, double (*transfer)(double, double,int ) )
 {
 	int i;
 
@@ -240,57 +250,6 @@ void free_nvlayer(NVLAYER *layer)
 
 ///////////////////////////     Nerve Cell/Layer/Net Functions     ///////////////////////
 
-/*-----------------------------------------------
- * Note:
- *	A step transfer function.
- * Params:
- * 	@u	input param for transfer function;
- * Return:
- *		a double.
-------------------------------------------------*/
-double func_step(double u, int token)
-{
-   /* Normal func */
-   if(token==NORMAL_FUNC) {
-	if(u>=0)
-		return 1.0;
-	else
-		return 0.0;
-   }
-   /* Derivative func */
-   else {
-	printf("%s: Derivative function NOT defined!!! \n",__func__);
-	return 0; ///////////////////////////////// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-   }
-}
-
-
-/*-----------------------------------------------
- * Note:
- *	A Sigmoid function.
- * Params:
- * 	@u	input param for function;
- *		if token==0:  param for sigmoid f(u)
- *		if token!=0:  f'(u)=o(1-o), where o=f(u)  NOT o=u!!!!!!
- *	@token	0 ---normal func; 1 ---derivative func
- * Return:
- *		a double.
-------------------------------------------------*/
-double func_sigmoid(double u, int token)
-{
-   /* Normal func */
-   if(token==NORMAL_FUNC) {
-	return 1.0/(1.0+exp(-u));
-   }
-   /* if DERIVATIVE_FUNC Derivative func
-    * Note: input of f'(u) is f(u), NOT u!!
-    */
-   else  {
-	return u*(1-u);
-  }
-}
-
-
 
 /*----------------------------------------------
  * Note:
@@ -309,8 +268,9 @@ int nvcell_feed_forward(NVCELL *nvcell)
 	if(nvcell==NULL || nvcell->transfunc==NULL)
 			return -1;
 
-	/* 1. reset dsum every time before feedforward */
+	/* 1. reset dsum and derr every time before feedforward */
 	nvcell->dsum=0;
+	nvcell->derr=0;
 
 	/* 2. Calculate sum of Xn*Wn */
 	/* 2.1 Get input from a data array */
@@ -318,6 +278,8 @@ int nvcell_feed_forward(NVCELL *nvcell)
 		for(i=0; i < nvcell->nin; i++) {
 			nvcell->dsum += (nvcell->din[i]) * (nvcell->dw[i]);
 		}
+		/* applay dv */
+		nvcell->dsum -= nvcell->dv;
 	}
 	/* 2.2 OR, get data from ahead nvcells' output */
 	else if( nvcell->incells !=NULL ) {
@@ -326,10 +288,11 @@ int nvcell_feed_forward(NVCELL *nvcell)
 			printf("%s: nvcell->incells[x] unavailable! \n",__func__);
 			return -2;
 		}
-
 		for(i=0; i < nvcell->nin; i++) {
 			nvcell->dsum += (nvcell->incells[i]->dout) * (nvcell->dw[i]);
 		}
+		/* applay dv */
+		nvcell->dsum -= nvcell->dv;
 	}
 	/* 2.3 OR, input data unavailable ! */
 	else {
@@ -339,7 +302,8 @@ int nvcell_feed_forward(NVCELL *nvcell)
 //	printf(" dsum=%f, dv=%f \n",nvcell->dsum, nvcell->dv);
 
 	/* 3. Calculate output with transfer function */
-	nvcell->dout=(*nvcell->transfunc)(nvcell->dsum - nvcell->dv, NORMAL_FUNC);
+//	nvcell->dout=(*nvcell->transfunc)(nvcell->dsum - nvcell->dv, NORMAL_FUNC);
+	nvcell->dout=(*nvcell->transfunc)(nvcell->dsum, 0, NORMAL_FUNC);  /* f=0 */
 
 	return 0;
 }
@@ -372,14 +336,14 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 	if(tv !=NULL )
  	{
   /* ---- LOSS FUNCTION for output nvcell : loss=(t-y)*f'(y) */
-		nvcell->derr=(*tv - nvcell->dout) * (nvcell->transfunc(nvcell->dout,DERIVATIVE_FUNC));
+		nvcell->derr=(*tv - nvcell->dout) * (nvcell->transfunc(nvcell->dsum, nvcell->dout, DERIVATIVE_FUNC));
 	}
 	/* else if it's non_output nvcell */
 	else
 	{
   /* ---- LOSS FUNCTION for NON_output nvcell : loss=derr*f'(y) */
 		/* assume that derr has already been feeded backed from the next layer */
-		nvcell->derr= nvcell->derr * (nvcell->transfunc(nvcell->dout,DERIVATIVE_FUNC));
+		nvcell->derr= nvcell->derr * (nvcell->transfunc(nvcell->dsum, nvcell->dout,DERIVATIVE_FUNC));
 	}
 
 //	printf("%s,--- update dw and v --- \n",__func__);
@@ -390,9 +354,10 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 		/* update dw */
 		for(i=0; i< nvcell->nin; i++) {
 			nvcell->dw[i] += dlrate*(nvcell->incells[i]->dout)*(nvcell->derr); /* already put previout output in din[] */
+
 		/* 3. feed back loss to previous nvcell */
-   /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr=dw[x]*derr */
-			nvcell->incells[i]->derr = (nvcell->dw[i])*(nvcell->derr);
+   /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr += dw[x]*derr, sum of all next layer feedback error */
+			nvcell->incells[i]->derr += (nvcell->dw[i])*(nvcell->derr);
 		}
 	}
 
