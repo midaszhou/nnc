@@ -30,21 +30,22 @@ struct nerve_cell
 
 struct nerve_layer
 {
-	int nc;		/* number of NVCELL in the layer */
+	int nc;			/* number of NVCELL in the layer */
 	NVCELL * *nvcells;	/* array of nerve cells in the layer */
 };
 
 
 struct nerve_net
 {
-	int nlayer;		/* number of NVLAYER in the net */
-	NVLAYER *nvlayers;       /*  array of nervers for the net */
+	int nl;			/* number of NVLAYER in the net */
+	NVLAYER * *nvlayers;     /*  array of nervers for the net */
 };
 
 
 /* Function declaration */
+/* nvcell */
 NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
-				double *din, double *dw, double bias, double (*transfer)(double, double, int ) );
+			double *din, double *dw, double bias, double (*transfer)(double, double, int ) );
 void free_nvcell(NVCELL *ncell);
 int nvcell_rand_dwv(NVCELL *ncell);
 int nvcell_feed_forward(NVCELL *nvcell);
@@ -52,14 +53,19 @@ int nvcell_feed_forward(NVCELL *nvcell);
 int nvcell_feed_backward(NVCELL *nvcell);
 int nvcell_input_data(NVCELL *cell, double *data);
 
-
-NVLAYER *new_nvlayer(int nc, const NVCELL *template_cell);
+/* nvlayers */
+NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell);
 void free_nvlayer(NVLAYER *layer);
 int nvlayer_feed_forward(NVLAYER *layer);
 double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
                         double (*loss_func)(double out, const double tv, int token) );
 int nvlayer_feed_backward(NVLAYER *layer);
 
+/* nvnet */
+NVNET *new_nvnet(unsigned int nl);
+void free_nvnet(NVNET *nnet);
+
+/* set param */
 void  nnc_set_param(double learn_rate);
 double random_btwone(void);
 

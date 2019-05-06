@@ -69,6 +69,30 @@ int main(void)
 #endif
 
 
+#if 1 /* ----- test NEW and FREE ---- */
+
+NVCELL *tmpcell=NULL;
+NVLAYER *tmplayer=NULL;
+NVNET *nnet=NULL;
+
+int k=0;
+while(1) {
+	k++;
+
+	tmpcell=new_nvcell(100, NULL, NULL, NULL, 0, func_TanSigmoid);
+        tmplayer=new_nvlayer(10,tmpcell);
+
+	free_nvcell(tmpcell);
+	free_nvlayer(tmplayer);
+
+	nnet=new_nvnet(10000);
+	free_nvnet(nnet);
+//	printf(" ------ %d ------\n",k);
+	usleep(10000);
+}
+#endif
+
+
 	double data_input[3];
 
 

@@ -33,6 +33,8 @@ Note:
    necessary to observe such condition and reset weights and bias
    for all cells.
 
+3. new_nvlayer() will also alloc nvcells inside, while new_nvnet() will NOT alloc nvlayers inside !!!
+
 
 Midas Zhou
 midaszhou@yahoo.com
@@ -105,7 +107,7 @@ NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
 	if(dw !=NULL) {
 		for(i=0;i<nin;i++) {
 			ncell->dw[i]=dw[i];
-			printf("dw[%d]=%f \n",i, ncell->dw[i]);
+//			printf("dw[%d]=%f \n",i, ncell->dw[i]);
 		}
 	}
 
@@ -158,7 +160,7 @@ int nvcell_rand_dwv(NVCELL *ncell)
 
 
 
-/*-----------------------------------------------
+/*---------------------------------------------------------------------
  * Note:
  *	1. Create a new nerve layer with nc nvcells inside.
  *	2. All nvcells of the nvlayer are copied from the template_cell
@@ -169,8 +171,8 @@ int nvcell_rand_dwv(NVCELL *ncell)
  * Return:
  *	pointer to NVLAYER	OK
  *	NULL			fails
---------------------------------------------------*/
-NVLAYER *new_nvlayer(int nc, const NVCELL *template_cell)
+--------------------------------------------------------------------*/
+NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell)
 {
 	int i,j;
 
@@ -180,20 +182,23 @@ NVLAYER *new_nvlayer(int nc, const NVCELL *template_cell)
 		return NULL;
 	}
 
-	if( template_cell ==NULL ) {
+	if( template_cell == NULL ) {
 		printf("Init a new NVLAYER: template cell is NULL.\n");
 		return NULL;
 	}
 
 	/* calloc NVLAYER */
 	NVLAYER *layer=calloc(1,sizeof(NVLAYER));
-	if(layer==NULL)
+	if(layer==NULL) {
+		printf("Init a new NVLAYER: fail to calloc nvlayer!\n");
 		return NULL;
+	}
 
 	/* calloc NVCELL* */
 	layer->nvcells=calloc(nc, sizeof(NVCELL *));
 	if(layer->nvcells==NULL) {
 		free(layer);
+		printf("Init a new NVLAYER: fail to calloc layer->nvcells!\n");
 		return NULL;
 	}
 
@@ -211,6 +216,7 @@ NVLAYER *new_nvlayer(int nc, const NVCELL *template_cell)
 				printf("Init a new NVLAYER: fail to create new_nvcell!.\n");
 				for(j=0;j<i;j++)
 					free_nvcell(layer->nvcells[j]);
+
 				free(layer->nvcells);
 				free(layer);
 
@@ -236,16 +242,83 @@ void free_nvlayer(NVLAYER *layer)
 	if(layer->nvcells==NULL) {
 		free(layer);
 		layer=NULL;
+
+		return;
 	}
 
 	/* else if nvcells is not NULL */
 	for(i=0; i < layer->nc; i++) {
-		if(layer->nvcells[i] != NULL)
+		if( layer->nvcells[i] != NULL)
 			free_nvcell(layer->nvcells[i]);
 	}
 
+	free(layer->nvcells);
 	free(layer);
 	layer=NULL;
+}
+
+
+/*-----------------------------------------------
+ * Create a NVNET and all nvlayers inside
+ * Params:
+ * 	@nl	number of nvlayers in the nvnet.
+------------------------------------------------*/
+NVNET *new_nvnet(unsigned int nl)
+{
+	/* check input param */
+	if(nl==0 ) {
+		printf("Init a new NVNET: input param 'nl' error.\n");
+		return NULL;
+	}
+
+	/* calloc NVNET */
+	NVNET *nnet=calloc(1,sizeof(NVNET));
+	if(nnet==NULL) {
+		printf("Init a new NVNET: fail to calloc nnet!\n");
+		return NULL;
+	}
+
+	/* calloc nnet->nvlayers */
+	nnet->nvlayers=calloc(nl, sizeof(NVLAYER *));
+	if(nnet->nvlayers==NULL) {
+		free(nnet);
+		printf("Init a new NVNET: fail to calloc nnet->nvlayer!\n");
+		return NULL;
+	}
+
+	/* assign nl */
+	nnet->nl=nl;
+
+	return nnet;
+}
+
+/*---------------------------------------------
+ * Free a NVNET with array of nvlayers inside
+ * Params:
+ * 	@nnet	pointer to a nerve layer.
+---------------------------------------------*/
+void free_nvnet(NVNET *nnet)
+{
+	int i;
+
+	if(nnet==NULL)
+		return;
+
+	if(nnet->nvlayers==NULL) {
+		free(nnet);
+		nnet=NULL;
+		return;
+	}
+
+	/* free nvlayers inside */
+	for(i=0;i < nnet->nl; i++) {
+		if(nnet->nvlayers[i] != NULL)
+			free_nvlayer(nnet->nvlayers[i]);
+	}
+
+	free(nnet->nvlayers);
+	free(nnet);
+	nnet=NULL;
 }
 
 
@@ -650,7 +723,6 @@ void nvlayer_print_params(NVLAYER *layer)
 	}
 
 }
-
 
 
 /////////////////////////      Loss Functions     ///////////////////////
