@@ -22,7 +22,7 @@ midaszhou@yahoo.com
 #include "nnc.h"
 #include "actfs.h"
 
-#define ERR_LIMIT	0.001
+#define ERR_LIMIT	0.0001
 
 int main(void)
 {
@@ -94,7 +94,7 @@ int main(void)
 
 
 /*  <<<<<<<<<<<<<<<<<  NNC Learning Process  >>>>>>>>>>>>>  */
-	nnc_set_param(0.02); /* set learn rate */
+	nnc_set_param(0.015); /* set learn rate */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
@@ -115,13 +115,16 @@ int main(void)
 			nvlayer_feed_forward(wo_layer);
 
 			/* 3. get err sum up */
-			err += (wo_layer->nvcells[0]->dout - pin[3+i*4])
-				 * (wo_layer->nvcells[0]->dout - pin[3+i*4]);
+//			err += (wo_layer->nvcells[0]->dout - pin[3+i*4])
+//				 * (wo_layer->nvcells[0]->dout - pin[3+i*4]);
+
+			err += nvlayer_mean_loss(wo_layer, pin+(3+i*4), func_lossMSE);
+
 
 			/* 4. feed backward wo->wm->wi, and update model params */
-			nvlayer_feed_backward(wo_layer,pin+(3+i*4));
-		        nvlayer_feed_backward(wm_layer,NULL);
-		        nvlayer_feed_backward(wi_layer,NULL);
+			nvlayer_feed_backward(wo_layer); //pin+(3+i*4));
+		        nvlayer_feed_backward(wm_layer);
+		        nvlayer_feed_backward(wi_layer);
 
 		}
 		count++;
@@ -131,11 +134,18 @@ int main(void)
   	}
 
 	printf("	%dth learning, err=%0.8f \n",count, err);
-	printf("Finish %d times batch learning!. \n\n",count);
+	printf("Finish %d times batch learning!. \n",count);
 
+	printf("\n----------- Print Model Params -----------");
+	printf("\n		[ wi_layer ]\n");
+	nvlayer_print_params(wi_layer);
+	printf("\n		[ wm_layer ]\n");
+	nvlayer_print_params(wm_layer);
+	printf("\n		[ wo_layer ]\n");
+	nvlayer_print_params(wo_layer);
 
 /*  <<<<<<<<<<<<<<<<<  Test Learned NN Model  >>>>>>>>>>>>>  */
-	printf("----------- Test learned NN Model -----------\n");
+	printf("\n----------- Test learned NN Model -----------\n");
 	for(i=0;i<ns;i++)
     	{
 		/* update data_input */
@@ -153,7 +163,6 @@ int main(void)
 		printf("\n");
 		printf("output: %lf \n",wo_layer->nvcells[0]->dout);
 	}
-
 
 /*  <<<<<<<<<<<<<<<<<  Destroy NN Model >>>>>>>>>>>>>  */
 

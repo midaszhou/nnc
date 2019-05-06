@@ -7,10 +7,11 @@ Glossary/Concept:
 
 1. transfer/output/activation function
    devtransfer:derivative function of transfer function
-2. loss/error = y(nn resutl) - t(real result)
+2. loss/error:
+   defined as loss=dE/Du=derr*f'(u); here, derr=SUM(dE/du*w) where E,u,w are of its downstream cells
 3. gradient function
 4. feedbackward/backpropagation
-5. batch-learn and single-learn
+5. batch-learn and online-learn
 
 dlrate:	learning rate
 
@@ -24,10 +25,9 @@ Note:
 	2. Weigths:	 w1,w2,w3,.....wn
 	3. Bias:	 bias value
 	4. sum up:	 u=x1*w1+x2*w2+x3*w3+....+xn*wn -bias
-
 	5. transfer function:   f(u)
-
 	6. activation output:	Z=f(u)
+ 	7. Loss: defined as loss=dE/Du=derr*f'(u); here, derr=SUM(dE/du*w) where E,u,w are of its downstream cells 
 
 2. Sometimes the err increases monotonously and NERVER converge, it's
    necessary to observe such condition and reset weights and bias
@@ -37,6 +37,7 @@ Note:
 Midas Zhou
 midaszhou@yahoo.com
 -----------------------------------------------------------------------*/
+
 #include "nnc.h"
 #include "actfs.h"
 #include <stdio.h>
@@ -270,7 +271,7 @@ int nvcell_feed_forward(NVCELL *nvcell)
 
 	/* 1. reset dsum and derr every time before feedforward */
 	nvcell->dsum=0;
-	nvcell->derr=0;
+	nvcell->derr=0; /* clear for feedback */
 
 	/* 2. Calculate sum of Xn*Wn */
 	/* 2.1 Get input from a data array */
@@ -309,6 +310,30 @@ int nvcell_feed_forward(NVCELL *nvcell)
 }
 
 
+/*-------------------------------------------------------------------
+ * Note:
+ *	Calculate loss value from output cells.
+ *      This func is to be called after each feed_forward calculaton.
+ *
+ * Params:
+ * 	@nvcell		output nerve cells;
+ *	@tv		array of teacher's value;
+ *
+ * Return:	loss/err value of the last feed_forward calculation.
+--------------------------------------------------------------------*/
+double nvcell_calc_loss(NVCELL *outcells, const double *tv,
+			double (*loss)(double out, const double tv) )
+{
+
+	/* check input param */
+	if( outcells==NULL || loss==NULL || tv==NULL ) {
+		printf("%s: input params invalid! \n",__func__);
+		return 999999.0;
+	}
+
+	return loss(outcells->dout,*tv);
+}
+
 
 /*------------------------------------------------------
  * Note:
@@ -323,7 +348,7 @@ int nvcell_feed_forward(NVCELL *nvcell)
  *		0	OK
  *		<0	fails
 --------------------------------------------------------*/
-int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
+int nvcell_feed_backward(NVCELL *nvcell)
 {
 	int i;
 
@@ -333,30 +358,36 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 
         /* 1. calculate error/loss */
 	/* if it's output nvcell */
-	if(tv !=NULL )
- 	{
-  /* ---- LOSS FUNCTION for output nvcell : loss=(t-y)*f'(y) */
-		nvcell->derr=(*tv - nvcell->dout) * (nvcell->transfunc(nvcell->dsum, nvcell->dout, DERIVATIVE_FUNC));
-	}
+//	if(tv !=NULL )
+// 	{
+  /* ----P1: LOSS COMPOSITE for output nvcell : loss composite=dE/du=L'(h)*f'(u)
+          after nvlayer_mean_loss() we get derr=L'(h). so derr=derr*f'(u):  */
+//		nvcell->derr *= nvcell->transfunc(nvcell->dsum, nvcell->dout, DERIVATIVE_FUNC);
+//	}
 	/* else if it's non_output nvcell */
-	else
-	{
-  /* ---- LOSS FUNCTION for NON_output nvcell : loss=derr*f'(y) */
-		/* assume that derr has already been feeded backed from the next layer */
-		nvcell->derr= nvcell->derr * (nvcell->transfunc(nvcell->dsum, nvcell->dout,DERIVATIVE_FUNC));
-	}
+//	else
+//	{
+  /* ----P2: LOSS COMPOSITE for NON_output nvcell : loss composite=dE/du=derr*f'(u)=SUM(dE/du[L+1]*w[L+1])*f'(u);
+         here,derr=SUM(dE/du[L+1]*w[L+1]) where E,u,w are of downstream cells,
+	 assume that above derr has already been feeded backed from the next layer cells */
+		nvcell->derr *= nvcell->transfunc(nvcell->dsum, nvcell->dout,DERIVATIVE_FUNC);
+//	}
 
-//	printf("%s,--- update dw and v --- \n",__func__);
+//	printf("%s,--- update dw and v --- \n", __func__ );
 
-	/* 2. update weight by learning */
+	/* 2. update weight by learning
+	   For output cells:      dw += -rate*L'(h)*f'(u)*h[L-1], assume derr=L'(h)*f'(u) already
+	   For non_output cells:  dw += -rate*dE/du*h[L-1],  derr=dE/du as in P1/P2.
+	 */
 	/* 2.1 If NOT input nvcells,  din is ahead nvcell's dout */
 	if( nvcell->incells !=NULL && nvcell->incells[0] != NULL) {
 		/* update dw */
 		for(i=0; i< nvcell->nin; i++) {
-			nvcell->dw[i] += dlrate*(nvcell->incells[i]->dout)*(nvcell->derr); /* already put previout output in din[] */
+			nvcell->dw[i] += -dlrate*(nvcell->incells[i]->dout)*(nvcell->derr); /* already put previout output in din[] */
 
-		/* 3. feed back loss to previous nvcell */
-   /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr += dw[x]*derr, sum of all next layer feedback error */
+		/* 3. feed back loss to previous nvcell, just take advantage of this for() loop */
+   /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr = SUM(dw*derr), sum of all next layer feedback error */
+			/* feedback through dw[] to its corresponding upstream cells */
 			nvcell->incells[i]->derr += (nvcell->dw[i])*(nvcell->derr);
 		}
 	}
@@ -365,7 +396,8 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 	else if(nvcell->din !=NULL) {
 		/* update dw */
 		for(i=0; i< nvcell->nin; i++) {
-			nvcell->dw[i] += dlrate*(nvcell->din[i])*(nvcell->derr); /* already put previout output in din[] */
+			/* here derr=SUM(dE/du[L+1]*w[L+1])*f'(u) alread */
+			nvcell->dw[i] += -dlrate*(nvcell->din[i])*(nvcell->derr); /* already put previout output in din[] */
 		}
 	}
 
@@ -376,10 +408,12 @@ int nvcell_feed_backward(NVCELL *nvcell, const double *tv)
 	}
 
 	/* 4. update bias value by learning */
-	nvcell->dv += dlrate*(-1.0)*(nvcell->derr); /* bias deemed as a special kind of weight, with din[x]=-1 */
+	nvcell->dv += -dlrate*(-1.0)*(nvcell->derr); /* bias deemed as a special kind of weight, with din[x]=-1 */
 
 	return 0;
 }
+
+
 
 
 
@@ -411,6 +445,55 @@ int nvlayer_feed_forward(NVLAYER *layer)
 }
 
 
+/*--------------------------------------------------------------------------------
+ *	WARN: The loss function MUST be a kind of MEAN loss type !!!!
+ * Note:
+ *  1.  Calculate MEAN loss value from output nerve cells. It calculates
+ *	each output nvcells with dout and tv, then use number of nvcells
+ *	to get a mean loss value.
+ *  2.  It alsao calculate derr=L'(h)*f'(u) 
+ *  3.  This func MUST be called after each feed_forward calculaton.
+ *
+ * Params:
+ * 	@outlayer	output nerve layer;
+ *	@tv		array of teacher's value;
+ *	@loss		MUST be a kind of MEAN loss function !!!
+ *
+ * Return:
+ *		0	OK
+ *		<0	fails
+------------------------------------------------------------------------------*/
+double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
+			double (*loss_func)(double out, const double tv, int token) )
+{
+	int i;
+	double err=0.0;
+	double loss=0.0;
+
+	/* check input param */
+	if(outlayer==NULL || outlayer->nvcells==NULL || loss_func==NULL || tv==NULL )
+	{
+		printf("%s: input params invalid! \n",__func__);
+		return 9999999.9;
+	}
+
+	/* for each output nvcell */
+	for(i=0; i< outlayer->nc; i++) {
+		/* sum up each loss */
+		loss += loss_func(outlayer->nvcells[i]->dout, tv[i], NORMAL_FUNC);
+
+		/* Here we onl calc L'(h), and put it in nvcell->derr,
+                 * later in nvcell_feed_backward() : derr=L'(h)*f'(u)=derr*f'(u) as dE/du.
+                 */
+		outlayer->nvcells[i]->derr = loss_func(outlayer->nvcells[i]->dout, tv[i], DERIVATIVE_FUNC);
+	}
+
+	/* get mean loss */
+	return loss/(outlayer->nc);
+}
+
+
+
 /*----------------------------------------------
  * Note:
  *	A feed forward function for a nerve layer.
@@ -422,7 +505,7 @@ int nvlayer_feed_forward(NVLAYER *layer)
  *		0	OK
  *		<0	fails
 -----------------------------------------------*/
-int nvlayer_feed_backward(NVLAYER *layer, double *tv)
+int nvlayer_feed_backward(NVLAYER *layer)
 {
 	int i;
 	int ret;
@@ -433,7 +516,7 @@ int nvlayer_feed_backward(NVLAYER *layer, double *tv)
 
 	/* feed forward all nvcells in the layer */
 	for(i=0; i< layer->nc; i++) {
-		ret=nvcell_feed_backward(layer->nvcells[i],tv);
+		ret=nvcell_feed_backward(layer->nvcells[i]);
 		if(ret !=0) return ret;
 	}
 
@@ -520,4 +603,83 @@ double random_btwone(void)
 	rnd=rnd*2-1;
 
 	return rnd;
+}
+
+
+
+////////////////////////      print params     //////////////////////////
+
+/*------------------------------------------------------
+ * Note:
+ *	1. Print dw and dv of a nvcell
+ * Params:
+ * 	@nvcell		a nerve cell;
+ *
+--------------------------------------------------------*/
+void nvcell_print_params(NVCELL *nvcell)
+{
+	int i;
+
+	if(nvcell==NULL)return;
+
+	printf("	  dw[%d]: ",nvcell->nin);
+	for( i=0; i < nvcell->nin; i++ ) {
+		printf("  %f",nvcell->dw[i]);
+	}
+	printf("   dv: %f   \n",nvcell->dv);
+
+}
+
+
+/*------------------------------------------------------
+ * Note:
+ *	1. Print dw and dv of  nvcells in a layer.
+ * Params:
+ * 	@nvcell		a nerve cell;
+ *
+--------------------------------------------------------*/
+void nvlayer_print_params(NVLAYER *layer)
+{
+	int k;
+
+	if(layer==NULL)return;
+
+	for(k=0; k < layer->nc; k++) {
+		printf("nvcell[%d] \n",k);
+		nvcell_print_params(layer->nvcells[k]);
+	}
+
+}
+
+
+
+/////////////////////////      Loss Functions     ///////////////////////
+
+/*------------------------- MSE Loss Function --------------------------------
+ * Mean Squared Error Loss Function for each sample:
+ *  		(1/N)*SUM[(tv-yi)^2],  1/N*SUM[ ... ] to be applied by the caller!!!
+ * NOTE:
+ *  1. For normal func: it returns  (tv-yi)^2.
+ *  2. For derivative func: it returns  -2*(tv-yi).
+ *
+ * Params:
+ * 	@out		nvcells  output value;
+ *	@tv		teacher's value
+ *	@token		NORMAL_FUNC or DERIVATIVE_FUNC
+ * Return:
+ *		0	OK
+ *		<0	fails
+------------------------------------------------------------------------------*/
+double func_lossMSE(double out, const double tv, int token)
+{
+
+   /* Normal func */
+   if(token==NORMAL_FUNC) {
+        return (tv-out)*(tv-out);
+   }
+   /* if DERIVATIVE_FUNC Derivative func */
+   else  {
+        return -2.0*(tv-out);
+  }
+
 }
