@@ -69,7 +69,7 @@ int main(void)
 #endif
 
 
-#if 1 /* ----- test NEW and FREE ---- */
+#if 0 /* ----- test NEW and FREE ---- */
 
 NVCELL *tmpcell=NULL;
 NVLAYER *tmplayer=NULL;
@@ -90,38 +90,47 @@ while(1) {
 //	printf(" ------ %d ------\n",k);
 	usleep(10000);
 }
+
 #endif
+
 
 
 	double data_input[3];
 
 
-//while(1)  {  /* test while */
+while(1)  {  /* test while */
 
 
 /*  <<<<<<<<<<<<<<<<<  Create Neuron Net >>>>>>>>>>>>>  */
-	/* 1. creat an input nvlayer */
+	/* 1. create an input nvlayer */
 	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0,func_TanSigmoid);//PReLU);//func_TanSigmoid); /* input cell */
 	nvcell_rand_dwv(wi_tempcell);
         NVLAYER *wi_layer=new_nvlayer(wi_cellnum,wi_tempcell);
 
-	/* 2. creat a mid nvlayer */
+	/* 2. create a mid nvlayer */
 	NVCELL *wm_tempcell=new_nvcell(wm_inpnum,wi_layer->nvcells,NULL,NULL,0,func_TanSigmoid);//sigmoid); /* input cell */
 	nvcell_rand_dwv(wm_tempcell);
         NVLAYER *wm_layer=new_nvlayer(wm_cellnum,wm_tempcell);
 
-	/* 3. creat an output nvlayer */
+	/* 3. create an output nvlayer */
 	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wm_layer->nvcells, NULL,NULL,0,func_TanSigmoid);//ReLU);//sigmoid); /* input cell */
 //	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wi_layer->nvcells, NULL,NULL,0,func_PReLU);//func_sigmoid); /* input cell */
 	nvcell_rand_dwv(wo_tempcell);
         NVLAYER *wo_layer=new_nvlayer(wo_cellnum,wo_tempcell);
 
+	/* 4. create an nerve net */
+	NVNET *nnet=new_nvnet(3); /* 3 layers inside */
+	nnet->nvlayers[0]=wi_layer;
+	nnet->nvlayers[1]=wm_layer;
+	nnet->nvlayers[2]=wo_layer;
 
 /*  <<<<<<<<<<<<<<<<<  NNC Learning Process  >>>>>>>>>>>>>  */
-	nnc_set_param(0.015); /* set learn rate */
+	nnc_set_param(0.02); /* set learn rate */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
+
+
   	while(err>ERR_LIMIT)
   	{
 		/* reset err */
@@ -133,29 +142,41 @@ while(1) {
 			/* 1. update data_input */
 			memcpy(data_input, pin+4*i,3*sizeof(double));
 
+#if 0 	/////////////////(  Learning On NVLayers  )///////////////////
+
 			/* 2. feed forward wi->wm->wo layer */
 			nvlayer_feed_forward(wi_layer);
 			nvlayer_feed_forward(wm_layer);
 			nvlayer_feed_forward(wo_layer);
 
 			/* 3. get err sum up */
-//			err += (wo_layer->nvcells[0]->dout - pin[3+i*4])
-//				 * (wo_layer->nvcells[0]->dout - pin[3+i*4]);
-
 			err += nvlayer_mean_loss(wo_layer, pin+(3+i*4), func_lossMSE);
-
 
 			/* 4. feed backward wo->wm->wi, and update model params */
 			nvlayer_feed_backward(wo_layer); //pin+(3+i*4));
 		        nvlayer_feed_backward(wm_layer);
 		        nvlayer_feed_backward(wi_layer);
 
+
+#else 	//////////////////(  Learning On NVNet  )/////////////////////
+
+			/* 2. nvnet feed forward  */
+			nvnet_feed_forward(nnet);
+
+			/* 3. get err sum up */
+			err += nvlayer_mean_loss(wo_layer, pin+(3+i*4), func_lossMSE);
+
+			/* 4. nvnet feed backward, and update model params */
+			nvnet_feed_backward(nnet);
+#endif
+
 		}
 		count++;
 
-		if( (count&255) == 0)
+		if( (count&(1024-1)) == 0)
 			printf("	%dth learning, err=%0.8f \n",count, err);
   	}
+
 
 	printf("	%dth learning, err=%0.8f \n",count, err);
 	printf("Finish %d times batch learning!. \n",count);
@@ -193,14 +214,16 @@ while(1) {
 	free_nvcell(wi_tempcell);
 	free_nvcell(wm_tempcell);
 	free_nvcell(wo_tempcell);
-
+/*
 	free_nvlayer(wi_layer);
 	free_nvlayer(wm_layer);
 	free_nvlayer(wo_layer);
+*/
+	free_nvnet(nnet);
 
 	usleep(100000);
 
-//} /* end test while */
+} /* end test while */
 
 	return 0;
 }

@@ -63,6 +63,8 @@ int nvlayer_feed_backward(NVLAYER *layer);
 
 /* nvnet */
 NVNET *new_nvnet(unsigned int nl);
+int nvnet_feed_forward(NVNET *nnet);
+int nvnet_feed_backward(NVNET *nnet);
 void free_nvnet(NVNET *nnet);
 
 /* set param */
@@ -75,5 +77,6 @@ void nvlayer_print_params(NVLAYER *layer);
 
 /* loss func */
 double func_lossMSE(double out, const double tv, int token);
+
 
 #endif

@@ -49,11 +49,12 @@ midaszhou@yahoo.com
 #include <sys/time.h>
 
 
-static double dlrate=20.0;       /* learning rate for all nvcells */
+static double dlrate=20.0;       /* default value, learning rate for all nvcells */
 
 
 /*--------------------------------------
  * set parameters for NNC
+@learn_rate:	learn rate
 --------------------------------------*/
 void  nnc_set_param(double learn_rate)
 {
@@ -157,7 +158,6 @@ int nvcell_rand_dwv(NVCELL *ncell)
 
 	return 0;
 }
-
 
 
 /*---------------------------------------------------------------------
@@ -518,8 +518,10 @@ int nvlayer_feed_forward(NVLAYER *layer)
 }
 
 
-/*--------------------------------------------------------------------------------
+/*-----------------------------------------------------------------------------
  *	WARN: The loss function MUST be a kind of MEAN loss type !!!!
+ * 	Example: (1/N)*SUM[(tv-yi)^2], (1/N)*SUM[ ] is calculated in this func.
+ *
  * Note:
  *  1.  Calculate MEAN loss value from output nerve cells. It calculates
  *	each output nvcells with dout and tv, then use number of nvcells
@@ -544,9 +546,12 @@ double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
 	double loss=0.0;
 
 	/* check input param */
-	if(outlayer==NULL || outlayer->nvcells==NULL || loss_func==NULL || tv==NULL )
-	{
+	if(outlayer==NULL || outlayer->nvcells==NULL|| tv==NULL ) {
 		printf("%s: input params invalid! \n",__func__);
+		return 9999999.9;
+	}
+	else if(loss_func==NULL) {
+		printf("%s: Loss function NOT defined! \n",__func__);
 		return 9999999.9;
 	}
 
@@ -555,7 +560,7 @@ double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
 		/* sum up each loss */
 		loss += loss_func(outlayer->nvcells[i]->dout, tv[i], NORMAL_FUNC);
 
-		/* Here we onl calc L'(h), and put it in nvcell->derr,
+		/* Here we only calc L'(h), and put it in nvcell->derr,
                  * later in nvcell_feed_backward() : derr=L'(h)*f'(u)=derr*f'(u) as dE/du.
                  */
 		outlayer->nvcells[i]->derr = loss_func(outlayer->nvcells[i]->dout, tv[i], DERIVATIVE_FUNC);
@@ -564,7 +569,6 @@ double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
 	/* get mean loss */
 	return loss/(outlayer->nc);
 }
-
 
 
 /*----------------------------------------------
@@ -597,23 +601,48 @@ int nvlayer_feed_backward(NVLAYER *layer)
 }
 
 
-/*----------------------------------------------
+/*-----------------------------------------
  * A feed forward function for a nerve NET.
  * Params:
- * 	@nvcell		a nerve cell;
+ * 	@nnet		nerve net
  * Return:
  *		0	OK
  *		<0	fails
------------------------------------------------*/
+-----------------------------------------*/
 int nvnet_feed_forward(NVNET *nnet)
 {
+	int i;
 
+	if( nnet==NULL || nnet->nl==0)
+		return -1;
 
+	for(i=0; i< nnet->nl; i++)
+		nvlayer_feed_forward(nnet->nvlayers[i]);
 
-
-
+	return 0;
 }
 
+
+/*-----------------------------------------
+ * A feed backward function for a nerve NET.
+ * Params:
+ * 	@nnet		nerve net
+ * Return:
+ *		0	OK
+ *		<0	fails
+-----------------------------------------*/
+int nvnet_feed_backward(NVNET *nnet)
+{
+	int i;
+
+	if( nnet==NULL || nnet->nl==0)
+		return -1;
+
+	for(i=nnet->nl-1; i>=0; i--)
+		nvlayer_feed_backward(nnet->nvlayers[i]);
+
+	return 0;
+}
 
 
 /*------------------------------------------------
@@ -728,8 +757,8 @@ void nvlayer_print_params(NVLAYER *layer)
 /////////////////////////      Loss Functions     ///////////////////////
 
 /*------------------------- MSE Loss Function --------------------------------
- * Mean Squared Error Loss Function for each sample:
- *  		(1/N)*SUM[(tv-yi)^2],  1/N*SUM[ ... ] to be applied by the caller!!!
+ * Mean Squared Error Loss Function for each sample: (tv-yi)^2
+ * 	 (1/N)*SUM[(tv-yi)^2],  1/N*SUM[ ... ] to be applied by the caller!!!
  * NOTE:
  *  1. For normal func: it returns  (tv-yi)^2.
  *  2. For derivative func: it returns  -2*(tv-yi).
