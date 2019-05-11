@@ -7,8 +7,7 @@ Glossary/Concept:
 
 1. transfer/output/activation function
    devtransfer:derivative function of transfer function
-2. loss/error:
-   defined as loss=dE/Du=derr*f'(u); here, derr=SUM(dE/du*w) where E,u,w are of its downstream cells
+2. loss/error
 3. gradient function
 4. feedbackward/backpropagation
 5. batch-learn and online-learn
@@ -26,8 +25,12 @@ Note:
 	3. Bias:	 bias value
 	4. sum up:	 u=x1*w1+x2*w2+x3*w3+....+xn*wn -bias
 	5. transfer function:   f(u)
-	6. activation output:	Z=f(u)
- 	7. Loss: defined as loss=dE/Du=derr*f'(u); here, derr=SUM(dE/du*w) where E,u,w are of its downstream cells 
+	6. activation output:	h=f(u)
+ 	7. 7.1 For non_output layer: Composite loss is defined as loss=dE/du=derr*f'(u)  <this is after feedback calculation>
+	       Before feedback calculation, derr=SUM(dE/du*w) where E,u,w are of its downstream cells.
+	   7.2 For outpout layer: derr=dE/du=L'(h)*f'(u) <this is after feedback calculation>
+	       Before feedback calculation, derr=L'(h),to calcluate L'(h) also need t--teacher value
+	8. Final loss/err: err=L(h), L(h) is loss functions. to calcluate L'(h) also need t--teacher value.
 
 2. Sometimes the err increases monotonously and NERVER converge, it's
    necessary to observe such condition and reset weights and bias
@@ -39,7 +42,6 @@ Note:
 Midas Zhou
 midaszhou@yahoo.com
 -----------------------------------------------------------------------*/
-
 #include "nnc.h"
 #include "actfs.h"
 #include <stdio.h>
@@ -308,6 +310,12 @@ void free_nvnet(NVNET *nnet)
 		free(nnet);
 		nnet=NULL;
 		return;
+	}
+
+	/* free params buff */
+	if(nnet->params != NULL) {
+		free(nnet->params);
+		nnet->params=NULL;
 	}
 
 	/* free nvlayers inside */
@@ -643,6 +651,118 @@ int nvnet_feed_backward(NVNET *nnet)
 
 	return 0;
 }
+
+
+
+/*---------------------------------------------
+ * Buff current params into nvnet->params.
+ * params are buffed in order: dw[],dv,dsum,dout,derr.
+ *
+ * the net. all to be double type.
+ *
+ * Params:
+ * 	@nnet		nerve net
+ * Return:
+ *		0	OK
+ *		<0	fails
+-----------------------------------------------*/
+int nvnet_buff_params(NVNET *nnet)
+{
+	int i,j,k;
+	int np; /* total numbers of params */
+	NVCELL *cell;
+
+	if( nnet==NULL || nnet->nl==0)
+		return -1;
+
+	/* if NULL, allocate nnet->params */
+	if(nnet->params==NULL) {
+		np=0;
+		for(i=0; i<nnet->nl; i++) {	/* layers in the nvnet */
+			for(j=0; j < nnet->nvlayers[i]->nc; j++) {	  /* cells in a layer */
+				cell=nnet->nvlayers[i]->nvcells[j];
+				np += cell->nin + 4; /* dw[], dv, dsum, dout, derr */
+			}
+		}
+
+		nnet->params=calloc(np,sizeof(double));
+		if(nnet->params==NULL) {
+			printf("%s: fail to calloc nnet->params.\n",__func__);
+			return -1;
+		}
+
+		nnet->np=np;
+		printf("%s: space for %d double type params are allocated to nvnet->param.\n",__func__, np);
+	}
+
+	/* put all params to nnet->params */
+	np=0;
+	for(i=0; i<nnet->nl; i++) {				  /* layers in the nvnet */
+		for(j=0; j < nnet->nvlayers[i]->nc; j++) {	  /* cells in a layer */
+
+			cell=nnet->nvlayers[i]->nvcells[j];
+			/* buff dw[] */
+			for(k=0; k< cell->nin; k++) {
+				nnet->params[np++]=cell->dw[k];
+			}
+			/* buff dv, dsum, dout, derr; beware of the their order */
+			nnet->params[np++]=cell->dv;
+			nnet->params[np++]=cell->dsum;
+			nnet->params[np++]=cell->dout;
+			nnet->params[np++]=cell->derr;
+		}
+	}
+	printf("%s: %d params buff into nvnet->params.\n",__func__, np);
+
+	return 0;
+}
+
+
+/*----------------------------------------------------
+ * Restore params in nvnet->buff to its cells
+ * params are buffed in order: dw[],dv,dsum,dout,derr.
+ * the net. all to be double type.
+ *
+ * Params:
+ * 	@nnet		nerve net
+ * Return:
+ *		0	OK
+ *		<0	fails
+-----------------------------------------------------*/
+int nvnet_restore_params(NVNET *nnet)
+{
+	int i,j,k;
+	int np; /* total numbers of params */
+	NVCELL *cell;
+
+	if( nnet==NULL || nnet->params==NULL || nnet->nl==0 )
+		return -1;
+
+
+	/* put all params to nnet->params */
+	np=0;
+	for(i=0; i<nnet->nl; i++) {				  /* layers in the nvnet */
+		for(j=0; j < nnet->nvlayers[i]->nc; j++) {	  /* cells in a layer */
+
+			cell=nnet->nvlayers[i]->nvcells[j];
+			/* restore dw[] */
+			for(k=0; k< cell->nin; k++) {
+				cell->dw[k]=nnet->params[np++];
+			}
+			/* buff dv, dsum, dout, derr; beware of the their order */
+			cell->dv=nnet->params[np++];
+			cell->dsum=nnet->params[np++];
+			cell->dout=nnet->params[np++];
+			cell->derr=nnet->params[np++];
+		}
+	}
+
+	printf("%s: %d params in nvnet->params restored into cells.\n",__func__, np);
+
+	return 0;
+}
+
+
 
 
 /*------------------------------------------------

@@ -25,7 +25,12 @@ struct nerve_cell
 	double dsum;	/* (u) sum of x1*w1+x2*w2+x3*w3+....+xn*wn -dv*/
 	double (*transfunc)(double, double, int); /* pointer to a transfer function (also include derivative part) */
 	double dout;	/* (h^L) dz, output value, dout=transfunc(dsum-dv) */
-	double derr;	/*  SUM(dE/du*w), backfeeded(back propagated) from the next layer cell */
+	double derr;	/* update in feedback process.
+			   For non_output layer, after feedback calculation:
+				derr=dE/du=f'(u)*SUM(dE/du*w), wereh SUM(dE/du*w)=backfeeded(back propagated) from the next layer cell
+			   For output layer, after feedback calculation:
+				derr=dE/du=f'(u)*L'(h)
+			*/
 };
 
 struct nerve_layer
@@ -39,6 +44,11 @@ struct nerve_net
 {
 	int nl;			/* number of NVLAYER in the net */
 	NVLAYER * *nvlayers;     /*  array of nervers for the net */
+
+	unsigned long np;	/* total numbers of params in the net */
+	double *params;	/* for buffing params of all cells in the nvnet,
+				 * params are buffed cell by cell, in order of: dw[], dv, dsum, dout, derr
+				*/
 };
 
 
@@ -65,6 +75,8 @@ int nvlayer_feed_backward(NVLAYER *layer);
 NVNET *new_nvnet(unsigned int nl);
 int nvnet_feed_forward(NVNET *nnet);
 int nvnet_feed_backward(NVNET *nnet);
+int nvnet_buff_params(NVNET *nnet);
+int nvnet_restore_params(NVNET *nnet);
 void free_nvnet(NVNET *nnet);
 
 /* set param */

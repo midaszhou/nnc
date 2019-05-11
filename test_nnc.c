@@ -16,6 +16,7 @@ midaszhou@yahoo.com
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <stdbool.h>
 #include <math.h>
 //#include <sys/time.h>
 #include <string.h>
@@ -40,6 +41,8 @@ int main(void)
 
 	double err;
 	int ns=8; /* input sample number + teacher value */
+
+	bool gradient_checked=false;
 
 	double pin[8*4]= /* 3 input + 1 teacher value */
 #if 0 /* when [0]+[1]+[2]>=2, output [3]=1 */
@@ -163,11 +166,19 @@ while(1)  {  /* test while */
 			/* 2. nvnet feed forward  */
 			nvnet_feed_forward(nnet);
 
-			/* 3. get err sum up */
+			/* 3. get err sum up, here also update derr=L'(u) of output layers */
 			err += nvlayer_mean_loss(wo_layer, pin+(3+i*4), func_lossMSE);
 
 			/* 4. nvnet feed backward, and update model params */
 			nvnet_feed_backward(nnet);
+
+			/* 5. check gradient */
+			if(!gradient_checked) {
+				nvnet_buff_params(nnet);
+				nvnet_buff_params(nnet);
+				gradient_checked=true;
+			}
+
 #endif
 
 		}
