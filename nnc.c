@@ -7,7 +7,7 @@ Glossary/Concept:
 
 1. transfer/output/activation function
    devtransfer:derivative function of transfer function
-2. loss/error
+2. loss/error/cost
 3. gradient function
 4. feedbackward/backpropagation
 5. batch-learn and online-learn
@@ -17,6 +17,7 @@ dlrate:	learning rate
 
 TODO:
 1. Store and deploy model.
+2. For multiply output, change mean loss function !!!!!
 
 Note:
 1. a single neural cell with N inputs:
@@ -51,7 +52,8 @@ midaszhou@yahoo.com
 #include <sys/time.h>
 
 
-static double dlrate=20.0;       /* default value, learning rate for all nvcells */
+static double dlrate=20.0;       	/* default value, learning rate for all nvcells */
+static double desp_params=0.0000001;	/* small change value for computing numerical gradients of params*/
 
 
 /*--------------------------------------
@@ -332,7 +334,6 @@ void free_nvnet(NVNET *nnet)
 
 ///////////////////////////     Nerve Cell/Layer/Net Functions     ///////////////////////
 
-
 /*----------------------------------------------
  * Note:
  *	A feed forward function for a nerve cell.
@@ -352,7 +353,7 @@ int nvcell_feed_forward(NVCELL *nvcell)
 
 	/* 1. reset dsum and derr every time before feedforward */
 	nvcell->dsum=0;
-	nvcell->derr=0; /* clear for feedback */
+//	nvcell->derr=0; /* put this in nvnet_feed_back() */
 
 	/* 2. Calculate sum of Xn*Wn */
 	/* 2.1 Get input from a data array */
@@ -409,7 +410,7 @@ double nvcell_calc_loss(NVCELL *outcells, const double *tv,
 	/* check input param */
 	if( outcells==NULL || loss==NULL || tv==NULL ) {
 		printf("%s: input params invalid! \n",__func__);
-		return 999999.0;
+		return 999999.9;
 	}
 
 	return loss(outcells->dout,*tv);
@@ -436,6 +437,8 @@ int nvcell_feed_backward(NVCELL *nvcell)
 	/* check input param */
 	if(nvcell==NULL || nvcell->transfunc==NULL)
 			return -1;
+
+
 
         /* 1. calculate error/loss */
 	/* if it's output nvcell */
@@ -464,12 +467,13 @@ int nvcell_feed_backward(NVCELL *nvcell)
 	if( nvcell->incells !=NULL && nvcell->incells[0] != NULL) {
 		/* update dw */
 		for(i=0; i< nvcell->nin; i++) {
-			nvcell->dw[i] += -dlrate*(nvcell->incells[i]->dout)*(nvcell->derr); /* already put previout output in din[] */
 
 		/* 3. feed back loss to previous nvcell, just take advantage of this for() loop */
    /* ---- LOSS BACKP_ROPAGATION FUNCTION : incell[x]_derr = SUM(dw*derr), sum of all next layer feedback error */
 			/* feedback through dw[] to its corresponding upstream cells */
 			nvcell->incells[i]->derr += (nvcell->dw[i])*(nvcell->derr);
+
+			nvcell->dw[i] += -dlrate*(nvcell->incells[i]->dout)*(nvcell->derr); /* already put previout output in din[] */
 		}
 	}
 
@@ -534,12 +538,13 @@ int nvlayer_feed_forward(NVLAYER *layer)
  *  1.  Calculate MEAN loss value from output nerve cells. It calculates
  *	each output nvcells with dout and tv, then use number of nvcells
  *	to get a mean loss value.
- *  2.  It alsao calculate derr=L'(h)*f'(u) 
+ *  2.  It alsao calculate derr=L'(h)*f'(u)
  *  3.  This func MUST be called after each feed_forward calculaton.
+ *  4.  Make sure that size of array tv is outlayer->nc.
  *
  * Params:
  * 	@outlayer	output nerve layer;
- *	@tv		array of teacher's value;
+ *	@tv		array of teacher's value.
  *	@loss		MUST be a kind of MEAN loss function !!!
  *
  * Return:
@@ -550,17 +555,18 @@ double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
 			double (*loss_func)(double out, const double tv, int token) )
 {
 	int i;
-	double err=0.0;
+	//double err=0.0;
 	double loss=0.0;
+//	double mean_loss=0.0;
 
 	/* check input param */
 	if(outlayer==NULL || outlayer->nvcells==NULL|| tv==NULL ) {
 		printf("%s: input params invalid! \n",__func__);
-		return 9999999.9;
+		return 999999.9;
 	}
 	else if(loss_func==NULL) {
 		printf("%s: Loss function NOT defined! \n",__func__);
-		return 9999999.9;
+		return 999999.9;
 	}
 
 	/* for each output nvcell */
@@ -573,6 +579,7 @@ double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
                  */
 		outlayer->nvcells[i]->derr = loss_func(outlayer->nvcells[i]->dout, tv[i], DERIVATIVE_FUNC);
 	}
+
 
 	/* get mean loss */
 	return loss/(outlayer->nc);
@@ -599,7 +606,7 @@ int nvlayer_feed_backward(NVLAYER *layer)
 	if(layer==NULL || layer->nvcells==NULL)
 		return -1;
 
-	/* feed forward all nvcells in the layer */
+	/* feed backward all nvcells in the layer */
 	for(i=0; i< layer->nc; i++) {
 		ret=nvcell_feed_backward(layer->nvcells[i]);
 		if(ret !=0) return ret;
@@ -613,21 +620,27 @@ int nvlayer_feed_backward(NVLAYER *layer)
  * A feed forward function for a nerve NET.
  * Params:
  * 	@nnet		nerve net
+ *	@tv		array of teach value
+ *	@loss_func	loss function
+ *
  * Return:
  *		0	OK
- *		<0	fails
+ *		a big value	fails
 -----------------------------------------*/
-int nvnet_feed_forward(NVNET *nnet)
+double nvnet_feed_forward(NVNET *nnet, const double *tv,
+			double (*loss_func)(double, const double, int) )
 {
 	int i;
 
 	if( nnet==NULL || nnet->nl==0)
-		return -1;
+		return 999999.9;
 
 	for(i=0; i< nnet->nl; i++)
 		nvlayer_feed_forward(nnet->nvlayers[i]);
 
-	return 0;
+        /* get final err */
+        return  nvlayer_mean_loss( nnet->nvlayers[nnet->nl-1], tv, loss_func );
+
 }
 
 
@@ -641,17 +654,25 @@ int nvnet_feed_forward(NVNET *nnet)
 -----------------------------------------*/
 int nvnet_feed_backward(NVNET *nnet)
 {
-	int i;
+	int i,j;
 
 	if( nnet==NULL || nnet->nl==0)
 		return -1;
 
+	/* clear derr in all cells */
+	for(i=0; i< nnet->nl; i++) {
+		/* but leave the output layer, as we already put derr=L'(h) there !!! */
+		for(j=0; j< nnet->nvlayers[i]->nc-1; j++) {
+			nnet->nvlayers[i]->nvcells[j]->derr=0;
+		}
+	}
+
+	/* feed backward from output layer to input layer */
 	for(i=nnet->nl-1; i>=0; i--)
 		nvlayer_feed_backward(nnet->nvlayers[i]);
 
 	return 0;
 }
-
 
 
 /*---------------------------------------------
@@ -695,7 +716,7 @@ int nvnet_buff_params(NVNET *nnet)
 		printf("%s: space for %d double type params are allocated to nvnet->param.\n",__func__, np);
 	}
 
-	/* put all params to nnet->params */
+	/* buff all params to nnet->params */
 	np=0;
 	for(i=0; i<nnet->nl; i++) {				  /* layers in the nvnet */
 		for(j=0; j < nnet->nvlayers[i]->nc; j++) {	  /* cells in a layer */
@@ -712,7 +733,7 @@ int nvnet_buff_params(NVNET *nnet)
 			nnet->params[np++]=cell->derr;
 		}
 	}
-	printf("%s: %d params buff into nvnet->params.\n",__func__, np);
+//	printf("%s: %d params buff into nvnet->params.\n",__func__, np);
 
 	return 0;
 }
@@ -757,11 +778,111 @@ int nvnet_restore_params(NVNET *nnet)
 		}
 	}
 
-	printf("%s: %d params in nvnet->params restored into cells.\n",__func__, np);
+//	printf("%s: %d params in nvnet->params restored into cells.\n",__func__, np);
 
 	return 0;
 }
 
+
+/*----------------------------------------------------------
+ * 1. Check gradient of nnet after backpropagation computation.
+ *    Check numerical gradient of dE/dw and dE/dv with the
+ *    backpropagation gradient respectively.
+ * 2. Call this function just after feedback computation!!!
+ *    that all cells can get its right params, including dout, derr etc.
+ * 3. Input and teacher data for gradient checking shall be
+ *    the same set as in the previous feedback computation. !!??
+ *
+ * Params:
+ * 	@nnet		nerve net
+ *	@tv		array of teacher value
+ *	@loss_func	loff function
+ * Return:
+ *		0	OK
+ *		<0	fails
+---------------------------------------------------------*/
+int nvnet_check_gradient(NVNET *nnet, const double *tv,
+			double (*loss_func)(double, const double, int) )
+{
+	int i,j,k;
+	NVCELL *cell;
+	double  dgrt_back; /* backpropagation gradient */
+	double  dgrt_num;  /* numerical gradient */
+	double  err_plus; /* err result for dw plus samll changes */
+	double  err_minus; /* err result for dw minus samll changes */
+
+	if( nnet==NULL || nnet->nl==0 )
+		return -1;
+
+	/* feed froward and buff all params */
+	nvnet_buff_params(nnet);
+
+	/* check gradient for each parameter */
+	for(i=0; i< nnet->nl; i++) {					  /* traverse nvlayers */
+	    printf("Check gradient for nvlayer[%d]:\n",i);
+
+	    for(j=0; j< nnet->nvlayers[i]->nc; j++) {			  /* traverse nvcells */
+		cell=nnet->nvlayers[i]->nvcells[j];
+
+	/* 1. dw[]---check dw[] gradient in the cell */
+		for(k=0; k< cell->nin; k++) {
+
+			/* 1.1 restore params and compute error with plus param */
+			nvnet_restore_params(nnet);
+
+			/* 1.2 get dgrt_back: dE/dw=h^(L-1)*derr */
+			if(cell->din != NULL) {		/* For input cells */
+				dgrt_back=cell->derr*(cell->din[k]);
+			}
+			else if(cell->incells[k] != NULL) {	/* For other cells */
+				dgrt_back=cell->derr*(cell->incells[k]->dout);
+			}
+			else
+				return 999999.9;		/* Fail */
+
+			cell->dw[k] += desp_params; /* plus a small change value */
+			err_plus= nvnet_feed_forward(nnet, tv, loss_func);
+
+			/* 1.3 restore params and compute error with minus param */
+			nvnet_restore_params(nnet);
+			cell->dw[k] -= desp_params; /* minus a small change value */
+			err_minus= nvnet_feed_forward(nnet, tv, loss_func);
+
+			/* 1.4 numerical gradient */
+			dgrt_num=(err_plus-err_minus)/(2.0*desp_params);
+
+			/* compare */
+			printf("dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",k,dgrt_back,dgrt_num);
+		}
+
+	/* 2. dv---check dv gradient in the cell */
+		nvnet_restore_params(nnet);
+
+		/* 2.1 dv----get dgrt_back: dE/dw=-1.0*derr */
+		dgrt_back=-1.0*cell->derr;
+
+		cell->dv += desp_params; /* plus a small change value */
+		err_plus= nvnet_feed_forward(nnet, tv, loss_func);
+
+		/* 2.2 restore params and compute error with minus param */
+		nvnet_restore_params(nnet);
+		cell->dv -= desp_params; /* minus a small change value */
+		err_minus= nvnet_feed_forward(nnet, tv, loss_func);
+
+		/* 2.3 numerical gradient */
+		dgrt_num=(err_plus-err_minus)/(2.0*desp_params);
+
+		/* compare */
+		printf("dv: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",dgrt_back,dgrt_num);
+
+	    }
+	}
+
+	/* restore params at last */
+	nvnet_restore_params(nnet);
+
+	return 0;
+}
 
 
 
@@ -838,7 +959,7 @@ double random_btwone(void)
  * 	@nvcell		a nerve cell;
  *
 --------------------------------------------------------*/
-void nvcell_print_params(NVCELL *nvcell)
+void nvcell_print_params(const NVCELL *nvcell)
 {
 	int i;
 
@@ -852,7 +973,6 @@ void nvcell_print_params(NVCELL *nvcell)
 
 }
 
-
 /*------------------------------------------------------
  * Note:
  *	1. Print dw and dv of  nvcells in a layer.
@@ -860,7 +980,7 @@ void nvcell_print_params(NVCELL *nvcell)
  * 	@nvcell		a nerve cell;
  *
 --------------------------------------------------------*/
-void nvlayer_print_params(NVLAYER *layer)
+void nvlayer_print_params(const NVLAYER *layer)
 {
 	int k;
 
@@ -869,6 +989,27 @@ void nvlayer_print_params(NVLAYER *layer)
 	for(k=0; k < layer->nc; k++) {
 		printf("nvcell[%d] \n",k);
 		nvcell_print_params(layer->nvcells[k]);
+	}
+
+}
+
+/*------------------------------------------------------
+ * Note:
+ *	1. Print dw and dv of  nvcells in a nvnet.
+ * Params:
+ * 	@nnet		a nerve net;
+ *
+--------------------------------------------------------*/
+void nvnet_print_params(const NVNET *nnet)
+{
+	int k;
+
+	if(nnet==NULL) return;
+
+	printf("\n      ----------- Print Model Params -----------\n");
+	for(k=0; k<nnet->nl; k++) {
+		printf("\n		--- nvlayer [%d] ---\n",k);
+		nvlayer_print_params(nnet->nvlayers[k]);
 	}
 
 }
@@ -898,7 +1039,7 @@ double func_lossMSE(double out, const double tv, int token)
    if(token==NORMAL_FUNC) {
         return (tv-out)*(tv-out);
    }
-   /* if DERIVATIVE_FUNC Derivative func */
+   /* if DERIVATIVE_FUNC Derivative func, dE/dh */
    else  {
         return -2.0*(tv-out);
   }

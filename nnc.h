@@ -16,7 +16,7 @@ typedef struct nerve_net NVNET;
 
 struct nerve_cell
 {
-	int nin; 	/* number of dendrite receivers */
+	unsigned int nin; 	/* number of dendrite receivers */
 	NVCELL * const *incells; /* array of input cells, whose outputs are inputs for this cell
 				  Only a pointer, will NOT allocate mem space. */
 	double *din; 	/* (h^L-1) array of input data, mem space NOT to be allocated. */
@@ -35,14 +35,14 @@ struct nerve_cell
 
 struct nerve_layer
 {
-	int nc;			/* number of NVCELL in the layer */
+	unsigned int nc;			/* number of NVCELL in the layer */
 	NVCELL * *nvcells;	/* array of nerve cells in the layer */
 };
 
 
 struct nerve_net
 {
-	int nl;			/* number of NVLAYER in the net */
+	unsigned int nl;			/* number of NVLAYER in the net */
 	NVLAYER * *nvlayers;     /*  array of nervers for the net */
 
 	unsigned long np;	/* total numbers of params in the net */
@@ -73,10 +73,14 @@ int nvlayer_feed_backward(NVLAYER *layer);
 
 /* nvnet */
 NVNET *new_nvnet(unsigned int nl);
-int nvnet_feed_forward(NVNET *nnet);
+//int nvnet_feed_forward(NVNET *nnet);
+double nvnet_feed_forward(NVNET *nnet, const double *tv,
+                        double (*loss_func)(double, const double, int) );
 int nvnet_feed_backward(NVNET *nnet);
 int nvnet_buff_params(NVNET *nnet);
 int nvnet_restore_params(NVNET *nnet);
+int nvnet_check_gradient(NVNET *nnet, const double *tv,
+                        double (*loss_func)(double, const double, int) );
 void free_nvnet(NVNET *nnet);
 
 /* set param */
@@ -84,8 +88,9 @@ void  nnc_set_param(double learn_rate);
 double random_btwone(void);
 
 /* print params */
-void nvcell_print_params(NVCELL *nvcell);
-void nvlayer_print_params(NVLAYER *layer);
+void nvcell_print_params(const NVCELL *nvcell);
+void nvlayer_print_params(const NVLAYER *layer);
+void nvnet_print_params(const NVNET *nnet);
 
 /* loss func */
 double func_lossMSE(double out, const double tv, int token);

@@ -101,7 +101,7 @@ while(1) {
 	double data_input[3];
 
 
-while(1)  {  /* test while */
+do {  /* test while */
 
 
 /*  <<<<<<<<<<<<<<<<<  Create Neuron Net >>>>>>>>>>>>>  */
@@ -128,7 +128,7 @@ while(1)  {  /* test while */
 	nnet->nvlayers[2]=wo_layer;
 
 /*  <<<<<<<<<<<<<<<<<  NNC Learning Process  >>>>>>>>>>>>>  */
-	nnc_set_param(0.02); /* set learn rate */
+	nnc_set_param(0.03); /* set learn rate */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
@@ -136,69 +136,59 @@ while(1)  {  /* test while */
 
   	while(err>ERR_LIMIT)
   	{
-		/* reset err */
+		/* 1. reset batch err */
 		err=0.0;
 
-		/* batch learning */
+		/* 2. batch learning */
 		for(i=0;i<ns;i++)
     		{
 			/* 1. update data_input */
-			memcpy(data_input, pin+4*i,3*sizeof(double));
-
-#if 0 	/////////////////(  Learning On NVLayers  )///////////////////
-
-			/* 2. feed forward wi->wm->wo layer */
-			nvlayer_feed_forward(wi_layer);
-			nvlayer_feed_forward(wm_layer);
-			nvlayer_feed_forward(wo_layer);
-
-			/* 3. get err sum up */
-			err += nvlayer_mean_loss(wo_layer, pin+(3+i*4), func_lossMSE);
-
-			/* 4. feed backward wo->wm->wi, and update model params */
-			nvlayer_feed_backward(wo_layer); //pin+(3+i*4));
-		        nvlayer_feed_backward(wm_layer);
-		        nvlayer_feed_backward(wi_layer);
-
-
-#else 	//////////////////(  Learning On NVNet  )/////////////////////
+			memcpy(data_input, pin+4*i, 3*sizeof(double));
 
 			/* 2. nvnet feed forward  */
-			nvnet_feed_forward(nnet);
+			err += nvnet_feed_forward(nnet, pin+(3+i*4),func_lossMSE);
 
-			/* 3. get err sum up, here also update derr=L'(u) of output layers */
-			err += nvlayer_mean_loss(wo_layer, pin+(3+i*4), func_lossMSE);
-
-			/* 4. nvnet feed backward, and update model params */
+			/* 3. nvnet feed backward, and update model params */
 			nvnet_feed_backward(nnet);
 
-			/* 5. check gradient */
-			if(!gradient_checked) {
-				nvnet_buff_params(nnet);
-				nvnet_buff_params(nnet);
-				gradient_checked=true;
-			}
 
+#if 1
+		if( !gradient_checked && count==100 ) {
+			nvnet_check_gradient(nnet, pin+(3+i*4), func_lossMSE);
+			gradient_checked=true;
+		}
 #endif
 
+			/* test buff/restore param */
+			//nvnet_buff_params(nnet);
+			//nvnet_restore_params(nnet);
 		}
+
+		/* 3. check gradient */
+#if 0
+		if( !gradient_checked && count==1 ) {
+			nvnet_check_gradient(nnet, pin+(3+i*4), func_lossMSE);
+			gradient_checked=true;
+		}
+#endif
 		count++;
 
 		if( (count&(1024-1)) == 0)
 			printf("	%dth learning, err=%0.8f \n",count, err);
   	}
 
+#if 0
+			nvnet_check_gradient(nnet, pin+(3+i*4), func_lossMSE);
+			gradient_checked=true;
+#endif
+
+
 
 	printf("	%dth learning, err=%0.8f \n",count, err);
 	printf("Finish %d times batch learning!. \n",count);
 
-	printf("\n----------- Print Model Params -----------");
-	printf("\n		[ wi_layer ]\n");
-	nvlayer_print_params(wi_layer);
-	printf("\n		[ wm_layer ]\n");
-	nvlayer_print_params(wm_layer);
-	printf("\n		[ wo_layer ]\n");
-	nvlayer_print_params(wo_layer);
+	/* print params */
+	nvnet_print_params(nnet);
 
 /*  <<<<<<<<<<<<<<<<<  Test Learned NN Model  >>>>>>>>>>>>>  */
 	printf("\n----------- Test learned NN Model -----------\n");
@@ -234,7 +224,7 @@ while(1)  {  /* test while */
 
 	usleep(100000);
 
-} /* end test while */
+} while(0); /* end test while */
 
 	return 0;
 }
