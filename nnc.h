@@ -9,6 +9,8 @@ Midas Zhou
 #ifndef __NNC_H__
 #define __NNC_H__
 
+#include <stdint.h>
+#include <stdbool.h>
 
 typedef struct nerve_cell NVCELL; 	/* neuron, or nerve cell */
 typedef struct nerve_layer NVLAYER;
@@ -74,9 +76,11 @@ int nvlayer_feed_backward(NVLAYER *layer);
 /* nvnet */
 NVNET *new_nvnet(unsigned int nl);
 //int nvnet_feed_forward(NVNET *nnet);
+int nvnet_init_params(NVNET *nnet);
 double nvnet_feed_forward(NVNET *nnet, const double *tv,
                         double (*loss_func)(double, const double, int) );
 int nvnet_feed_backward(NVNET *nnet);
+int nvnet_update_params(NVNET *nnet, double rate);
 int nvnet_buff_params(NVNET *nnet);
 int nvnet_restore_params(NVNET *nnet);
 int nvnet_check_gradient(NVNET *nnet, const double *tv,
@@ -95,5 +99,7 @@ void nvnet_print_params(const NVNET *nnet);
 /* loss func */
 double func_lossMSE(double out, const double tv, int token);
 
+/* others */
+bool  gradient_isclose(double da, double db);
 
 #endif
