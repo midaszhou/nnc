@@ -55,7 +55,7 @@ midaszhou@yahoo.com
 
 
 static double dlrate=20.0;       	/* default value, learning rate for all nvcells */
-static double desp_params=0.0000001;	/* small change value for computing numerical gradients of params*/
+static double desp_params=0.00001;	/* small change value for computing numerical gradients of params*/
 
 
 /*--------------------------------------
@@ -124,6 +124,7 @@ NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
 	ncell->dv=bias;
 	ncell->dsum=0.0;
 	ncell->transfunc=transfer;
+	ncell->dout=0.0;
 
 	return ncell;
 }
@@ -386,8 +387,7 @@ int nvcell_feed_forward(NVCELL *nvcell)
 	}
 //	printf(" dsum=%f, dv=%f \n",nvcell->dsum, nvcell->dv);
 
-	/* 3. Calculate output with transfer function */
-//	nvcell->dout=(*nvcell->transfunc)(nvcell->dsum - nvcell->dv, NORMAL_FUNC);
+	/* 3. Calculate output with transfer/activation function */
 	nvcell->dout=(*nvcell->transfunc)(nvcell->dsum, 0, NORMAL_FUNC);  /* f=0 */
 
 	return 0;
@@ -455,7 +455,7 @@ int nvcell_feed_backward(NVCELL *nvcell)
   /* ----P2: LOSS COMPOSITE for NON_output nvcell : loss composite=dE/du=derr*f'(u)=SUM(dE/du[L+1]*w[L+1])*f'(u);
          here,derr=SUM(dE/du[L+1]*w[L+1]) where E,u,w are of downstream cells,
 	 assume that above derr has already been feeded backed from the next layer cells */
-		nvcell->derr *= nvcell->transfunc(nvcell->dsum, nvcell->dout,DERIVATIVE_FUNC);
+		nvcell->derr *= (*nvcell->transfunc)(nvcell->dsum, nvcell->dout, DERIVATIVE_FUNC);
 //	}
 
 //	printf("%s,--- update dw and v --- \n", __func__ );
@@ -465,7 +465,7 @@ int nvcell_feed_backward(NVCELL *nvcell)
 	   For non_output cells:  dw += -rate*dE/du*h[L-1],  derr=dE/du as in P1/P2.
 	 */
 	/* 2.1 If NOT input nvcells,  feedback to upstream cells */
-	if( nvcell->incells !=NULL && nvcell->incells[0] != NULL) {
+	if( nvcell->incells !=NULL && nvcell->incells[0] != NULL)  {
 		/* update dw */
 		for(i=0; i< nvcell->nin; i++) {
 
@@ -529,7 +529,7 @@ int nvlayer_feed_forward(NVLAYER *layer)
 	/* feed forward all nvcells in the layer */
 	for(i=0; i< layer->nc; i++) {
 		ret=nvcell_feed_forward(layer->nvcells[i]);
-		if(ret !=0) return ret;
+		if( ret !=0 ) return ret;
 	}
 
 	return 0;
@@ -586,7 +586,6 @@ double nvlayer_mean_loss(NVLAYER *outlayer, const double *tv,
 		outlayer->nvcells[i]->derr = loss_func(outlayer->nvcells[i]->dout, tv[i], DERIVATIVE_FUNC);
 	}
 
-
 	/* get mean loss */
 	return loss/(outlayer->nc);
 }
@@ -622,8 +621,6 @@ int nvlayer_feed_backward(NVLAYER *layer)
 }
 
 
-
-// nvcell_rand_dwv
 /*-----------------------------------------
  * A feed forward function for a nerve NET.
  * Params:
@@ -644,16 +641,17 @@ int nvnet_init_params(NVNET *nnet)
 	for(i=0; i< nnet->nl; i++) {
 		for(j=0; j< nnet->nvlayers[i]->nc; j++) {
 			cell=nnet->nvlayers[i]->nvcells[j];
-			if( nvcell_rand_dwv(cell) <0 )
+			if( nvcell_rand_dwv(cell) <0 ) /* rand dw dv */
 				return -2;
-			cell->dsum=0;
-			cell->derr=0;
+			cell->dsum=0.0;
+			cell->dout=0.0;
+			cell->derr=0.0;
 		}
 	}
 
-
 	return 0;
 }
+
 
 /*-----------------------------------------
  * A feed forward function for a nerve NET.
@@ -663,7 +661,7 @@ int nvnet_init_params(NVNET *nnet)
  *	@loss_func	loss function
  *
  * Return:
- *		0	OK
+ *			OK
  *		a big value	fails
 -----------------------------------------*/
 double nvnet_feed_forward(NVNET *nnet, const double *tv,
@@ -698,17 +696,21 @@ int nvnet_feed_backward(NVNET *nnet)
 	if( nnet==NULL || nnet->nl==0)
 		return -1;
 
-	/* clear derr in all cells */
-	for(i=0; i< nnet->nl; i++) {
+	/* clear derr in all cells,except the output cells */
+	for(i=0; i< nnet->nl-1; i++) {
 		/* but leave the output layer, as we already put derr=L'(h) there !!! */
-		for(j=0; j< nnet->nvlayers[i]->nc-1; j++) {
-			nnet->nvlayers[i]->nvcells[j]->derr=0;
+		for(j=0; j< nnet->nvlayers[i]->nc; j++) {
+			nnet->nvlayers[i]->nvcells[j]->derr=0.0;
 		}
 	}
 
 	/* feed backward from output layer to input layer */
-	for(i=nnet->nl-1; i>=0; i--)
-		nvlayer_feed_backward(nnet->nvlayers[i]);
+	for(i=nnet->nl-1; i>=0; i--) {
+		if(nvlayer_feed_backward(nnet->nvlayers[i]) !=0 ) {
+			printf("%s: nvlayer[%d] feed backward fails!\n",__func__,i);
+			return -2;
+		}
+	}
 
 	return 0;
 }
@@ -741,13 +743,14 @@ int nvnet_update_params(NVNET *nnet, double rate)
 	for(i=0; i< nnet->nl; i++) {			/* traverse nvlayers */
 	   for(j=0; j< nnet->nvlayers[i]->nc; j++) {	/* traverse nvcells */
 	      cell=nnet->nvlayers[i]->nvcells[j];
+
 	      for(k=0; k< cell->nin; k++)  {		/* traverse params */
 
 		 /* 1. update dw[] += -LEARN_RATE*h[L-1]*derr */
 		 if( cell->incells !=NULL && cell->incells[0] != NULL) {
 			cell->dw[k] += -rate*(cell->incells[k]->dout)*(cell->derr);
 		 }
-		 else if(cell->din !=NULL) {
+		 else if( cell->din !=NULL ) {
 			cell->dw[k] += -rate*(cell->din[k])*(cell->derr);
 		}
 		else {
@@ -787,7 +790,7 @@ int nvnet_buff_params(NVNET *nnet)
 	/* if NULL, allocate nnet->params */
 	if(nnet->params==NULL) {
 		np=0;
-		for(i=0; i<nnet->nl; i++) {	/* layers in the nvnet */
+		for(i=0; i< nnet->nl; i++) {	/* layers in the nvnet */
 			for(j=0; j < nnet->nvlayers[i]->nc; j++) {	  /* cells in a layer */
 				cell=nnet->nvlayers[i]->nvcells[j];
 				np += cell->nin + 4; /* dw[], dv, dsum, dout, derr */
@@ -850,7 +853,7 @@ int nvnet_restore_params(NVNET *nnet)
 
 	/* put all params to nnet->params */
 	np=0;
-	for(i=0; i<nnet->nl; i++) {				  /* layers in the nvnet */
+	for(i=0; i< nnet->nl; i++) {				  /* layers in the nvnet */
 		for(j=0; j < nnet->nvlayers[i]->nc; j++) {	  /* cells in a layer */
 
 			cell=nnet->nvlayers[i]->nvcells[j];
@@ -873,7 +876,8 @@ int nvnet_restore_params(NVNET *nnet)
 
 
 /*----------------------------------------------------------
- * 1. Check gradient of nnet after backpropagation computation.
+ * 1. Check gradient of nnet after backpropagation computation
+ *    and before updateing params.
  *    Check numerical gradient of dE/dw and dE/dv with the
  *    backpropagation gradient respectively.
  * 2. Call this function just after feedback computation!!!
@@ -898,12 +902,12 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 	double  dgrt_num;  /* numerical gradient */
 	double  err_plus; /* err result for dw plus samll changes */
 	double  err_minus; /* err result for dw minus samll changes */
-	double  dcomp;	   /* (dgrt_num-dgrt_back)/dgrt_num OR (dgrt_back-dgrt_num)/dgrt_back */
+//	double  dcomp;	   /* (dgrt_num-dgrt_back)/dgrt_num OR (dgrt_back-dgrt_num)/dgrt_back */
 
 	if( nnet==NULL || nnet->nl==0 )
 		return -1;
 
-	/* feed froward and buff all params */
+	/* buff all params */
 	nvnet_buff_params(nnet);
 
 	/* check gradient for each parameter */
@@ -913,48 +917,48 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 	    for(j=0; j< nnet->nvlayers[i]->nc; j++) {			  /* traverse nvcells */
 		cell=nnet->nvlayers[i]->nvcells[j];
 
-	/* 1. dw[]---check dw[] gradient in the cell */
+		/* 1. dw[]---check dw[] gradient in the cell */
 		for(k=0; k< cell->nin; k++) {
 
-			/* 1.1 restore params and compute error with plus param */
-			nvnet_restore_params(nnet);
-
-			/* 1.2 get dgrt_back: dE/dw=h^(L-1)*derr */
-			if(cell->din != NULL) {		/* For input cells */
+			/* 1.1 get dgrt_back: dE/dw=h^(L-1)*derr */
+			nvnet_restore_params(nnet); /* restore params before calculate dgrt_back */
+			if(i==0) {  //i==0 for input layer OR cell->din != NULL) { /* For input cells */
 				dgrt_back=cell->derr*(cell->din[k]);
 			}
-			else if(cell->incells[k] != NULL) {	/* For other cells */
+			else if(cell->incells[k] != NULL) {	/* For non_input layers */
 				dgrt_back=cell->derr*(cell->incells[k]->dout);
 			}
 			else
-				return 999999.9;		/* Fail */
+				return -2;		/* Fail */
 
+			/* 1.2 calculate err_plus, with restored  params */
 			cell->dw[k] += desp_params; /* plus a small change value */
 			err_plus= nvnet_feed_forward(nnet, tv, loss_func);
 
-			/* 1.3 restore params and compute error with minus param */
+			/* 1.3 restore params again and compute error with minus param */
 			nvnet_restore_params(nnet);
 			cell->dw[k] -= desp_params; /* minus a small change value */
 			err_minus= nvnet_feed_forward(nnet, tv, loss_func);
 
-			/* 1.4 numerical gradient */
+			/* 1.4 get numerical gradient */
 			dgrt_num=(err_plus-err_minus)/(2.0*desp_params);
 
-			/* compare */
-//			if( gradient_isclose(dgrt_num,dgrt_back)==false ) {
-			if( gradient_isclose(dgrt_num,dgrt_back)==false && cell->din==NULL)
-			{
-				printf("dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",
-										k,dgrt_back,dgrt_num);
+			/* 1.5 compare results */
+			printf("dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",k,dgrt_back,dgrt_num);
+#if 1
+			if( gradient_isclose(dgrt_num,dgrt_back)==false ) {
+//			if( gradient_isclose(dgrt_num,dgrt_back)==false && cell->din==NULL) {
+			   printf("Gradient check fails for dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",
+									k,dgrt_back,dgrt_num);
 				return -1;
 			}
-
+#endif
 		}
 
 	/* 2. dv---check dv gradient in the cell */
-		nvnet_restore_params(nnet);
 
-		/* 2.1 dv----get dgrt_back: dE/dw=-1.0*derr */
+		/* 2.1 dv----get dgrt_back: dE/dv=-1.0*derr */
+		nvnet_restore_params(nnet);
 		dgrt_back=-1.0*cell->derr;
 
 		cell->dv += desp_params; /* plus a small change value */
@@ -968,18 +972,22 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 		/* 2.3 numerical gradient */
 		dgrt_num=(err_plus-err_minus)/(2.0*desp_params);
 
-		/* compare */
-		if( gradient_isclose(dgrt_num,dgrt_back)==false && cell->din==NULL) {
-//		if( gradient_isclose(dgrt_num,dgrt_back)==false ) {
-			printf("dv: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",dgrt_back, dgrt_num);
+		/* compare results */
+		printf("dv: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",dgrt_back, dgrt_num);
+#if 1
+//		if( gradient_isclose(dgrt_num, dgrt_back)==false && cell->din==NULL) {
+		if( gradient_isclose(dgrt_num,dgrt_back)==false ) {
+  		         printf("Gradient check fails for dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",
+									k,dgrt_back,dgrt_num);
 			return -1;
 		}
+#endif
 
 	    }
 	}
 
 	/* restore params at last */
-	printf("	----- gradients checking passed! ----- \n");
+	printf("\n	-------<<<   gradients checking passed!  >>>------- \n");
 	nvnet_restore_params(nnet);
 
 	return 0;
@@ -1044,7 +1052,7 @@ double random_btwone(void)
         srand(tmval.tv_usec);
 
 	while( (rnd=(double)rand()/RAND_MAX) == 1.0 );
-	rnd=rnd*2-1;
+	rnd=rnd*2-1.0;
 
 	return rnd;
 }
@@ -1149,8 +1157,8 @@ double func_lossMSE(double out, const double tv, int token)
 
 
 /* to define limit value for gradient checking */
-#define GRADIENT_ABS_LIMIT	0.000001	/* absolue small value limit */
-#define GRADIENT_COMP_LIMIT	0.001		/* compared/percentage small value limit */
+#define GRADIENT_ABS_LIMIT	0.00000001	/* absolue small value limit */
+#define GRADIENT_COMP_LIMIT	0.0001		/* compared/percentage small value limit */
 /*------------------------------------------------------
  * check two gradient value if they are close enough
  * Params:

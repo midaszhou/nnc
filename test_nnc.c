@@ -61,13 +61,13 @@ int main(void)
 #if 1 /* Logic: [3]=(-1)^([0]+[1]+[2]) */
 {
 1,1,1,-1,
-1,1,0,1,
-1,0,1,1,
-1,0,0,-1,
-0,1,1,1,
-0,1,0,-1,
-0,0,1,-1,
-0,0,0,1,
+1,1,0.1,1,
+1,0.1,1,1,
+1,0.1,0.1,-1,
+0.1,1,1,1,
+0.1,1,0.1,-1,
+0.1,0.1,1,-1,
+0.1,0.1,0.1,1,
 };
 #endif
 
@@ -106,19 +106,15 @@ do {  /* test while */
 
 /*  <<<<<<<<<<<<<<<<<  Create Neuron Net >>>>>>>>>>>>>  */
 	/* 1. create an input nvlayer */
-	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0,func_TanSigmoid);//PReLU);//func_TanSigmoid); /* input cell */
-	nvcell_rand_dwv(wi_tempcell);
+	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0, func_TanSigmoid); /* input cell */
         NVLAYER *wi_layer=new_nvlayer(wi_cellnum,wi_tempcell);
 
 	/* 2. create a mid nvlayer */
 	NVCELL *wm_tempcell=new_nvcell(wm_inpnum,wi_layer->nvcells,NULL,NULL,0,func_TanSigmoid);//sigmoid); /* input cell */
-	nvcell_rand_dwv(wm_tempcell);
         NVLAYER *wm_layer=new_nvlayer(wm_cellnum,wm_tempcell);
 
 	/* 3. create an output nvlayer */
 	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wm_layer->nvcells, NULL,NULL,0,func_TanSigmoid);//ReLU);//sigmoid); /* input cell */
-//	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wi_layer->nvcells, NULL,NULL,0,func_PReLU);//func_sigmoid); /* input cell */
-	nvcell_rand_dwv(wo_tempcell);
         NVLAYER *wo_layer=new_nvlayer(wo_cellnum,wo_tempcell);
 
 	/* 4. create an nerve net */
@@ -127,20 +123,22 @@ do {  /* test while */
 	nnet->nvlayers[1]=wm_layer;
 	nnet->nvlayers[2]=wo_layer;
 
+	/* 5. init params */
+	nvnet_init_params(nnet);
+
 /*  <<<<<<<<<<<<<<<<<  NNC Learning Process  >>>>>>>>>>>>>  */
-	nnc_set_param(0.05);//0.03); /* set learn rate */
+//	nnc_set_param(0.05);//0.03); /* set learn rate */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
 
-
-  	while(err>ERR_LIMIT || !gradient_checked )
+  	while(err>ERR_LIMIT)
   	{
 		/* 1. reset batch err */
 		err=0.0;
 
 		/* 2. batch learning */
-		for(i=0;i<ns;i++)
+		for(i=0; i<ns; i++)
     		{
 			/* 1. update data_input */
 			memcpy(data_input, pin+4*i, 3*sizeof(double));
@@ -148,30 +146,26 @@ do {  /* test while */
 			/* 2. nvnet feed forward  */
 			err += nvnet_feed_forward(nnet, pin+(3+i*4),func_lossMSE);
 
-			/* 3. nvnet feed backward, and update model params */
+			/* 3. nvnet feed backward, update cell->derrs */
 			nvnet_feed_backward(nnet);
 
 #if 1
 			/* check gradient just before updating params */
-			if( !gradient_checked && count>1) {
+			if( !gradient_checked && count>10 && i==3 ) {
 				if( nvnet_check_gradient(nnet, pin+(3+i*4), func_lossMSE) < 0) {
-					count=0;
-
-					/* reset params */
-					nvnet_init_params(nnet);
-
-					break;
+					printf("Gradient_check failed!\n");
+					exit(-1);
 				}
 				else {
 					gradient_checked=true;
-					sleep(2);
 				}
+				nvnet_print_params(nnet);
+				sleep(2);
 			}
 #endif
 
 			/* 4. update params after feedback computation */
 			nvnet_update_params(nnet, 0.02);
-
 		}
 
 		count++;
@@ -185,6 +179,14 @@ do {  /* test while */
 
 	/* print params */
 	nvnet_print_params(nnet);
+
+	/* ---- check gradient again ---- */
+	i=2;
+	memcpy(data_input, pin+4*i, 3*sizeof(double));
+	nvnet_feed_forward(nnet, pin+(3+i*4),func_lossMSE);
+	nvnet_feed_backward(nnet);
+	nvnet_check_gradient(nnet, pin+(3+i*4), func_lossMSE);
+
 
 /*  <<<<<<<<<<<<<<<<<  Test Learned NN Model  >>>>>>>>>>>>>  */
 	printf("\n----------- Test learned NN Model -----------\n");
@@ -216,7 +218,7 @@ do {  /* test while */
 	free_nvlayer(wm_layer);
 	free_nvlayer(wo_layer);
 */
-	free_nvnet(nnet);
+	free_nvnet(nnet); /* free nvnet also free its nvlayers and nvcells inside */
 
 	usleep(100000);
 

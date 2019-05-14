@@ -61,7 +61,6 @@ NVCELL * new_nvcell( unsigned int nin, NVCELL * const *incells,
 void free_nvcell(NVCELL *ncell);
 int nvcell_rand_dwv(NVCELL *ncell);
 int nvcell_feed_forward(NVCELL *nvcell);
-
 int nvcell_feed_backward(NVCELL *nvcell);
 int nvcell_input_data(NVCELL *cell, double *data);
 
