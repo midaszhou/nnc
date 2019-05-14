@@ -8,7 +8,7 @@ Glossary/Concept:
 1. transfer/output/activation function
    devtransfer:derivative function of transfer function
 2. loss/error/cost
-	loss  --- Loss for one learning sample.
+	loss  --- Loss/cost for one learning sample.
 	error --- All err values summed up for all learning samples.
 3. gradient function
 4. feedbackward/backpropagation
@@ -54,9 +54,14 @@ midaszhou@yahoo.com
 #include <sys/time.h>
 
 
+/* to define limit value for gradient checking */
+#define GRADIENT_ABS_LIMIT	0.00000001	/* absolue small value limit */
+#define GRADIENT_COMP_LIMIT	0.0001		/* compared/percentage small value limit */
+
+
 static double dlrate=20.0;       	/* default value, learning rate for all nvcells */
 static double desp_params=0.00001;	/* small change value for computing numerical gradients of params*/
-
+static double dmmt_fric=0.75;		/* friction rate for momentum updating algorithm */
 
 /*--------------------------------------
  * set parameters for NNC
@@ -321,6 +326,12 @@ void free_nvnet(NVNET *nnet)
 	if(nnet->params != NULL) {
 		free(nnet->params);
 		nnet->params=NULL;
+	}
+
+	/* free mmts buff */
+	if(nnet->mmts != NULL) {
+		free(nnet->mmts);
+		nnet->mmts=NULL;
 	}
 
 	/* free nvlayers inside */
@@ -717,8 +728,8 @@ int nvnet_feed_backward(NVNET *nnet)
 
 
 
-/*-------------------------------------------------------------------------
- * Update all cells' params for a nerve NET.
+/*------------------------------------------------------------------------------
+ *  Update all cells' params of a nvnet by simple gradient descent algorithm.
  *  For output cells:      dw += -rate*L'(h)*f'(u)*h[L-1],
  *       assume derr=L'(h)*f'(u) already computed by nvnet_feed_backward().
  *  For non_output cells:  dw += -rate*dE/du*h[L-1],
@@ -733,7 +744,6 @@ int nvnet_feed_backward(NVNET *nnet)
 ---------------------------------------------------------------------------*/
 int nvnet_update_params(NVNET *nnet, double rate)
 {
-
 	int i,j,k;
 	NVCELL *cell;
 
@@ -744,27 +754,115 @@ int nvnet_update_params(NVNET *nnet, double rate)
 	   for(j=0; j< nnet->nvlayers[i]->nc; j++) {	/* traverse nvcells */
 	      cell=nnet->nvlayers[i]->nvcells[j];
 
+	      /* 1. update dw[] += -LEARN_RATE*h[L-1]*derr */
 	      for(k=0; k< cell->nin; k++)  {		/* traverse params */
 
-		 /* 1. update dw[] += -LEARN_RATE*h[L-1]*derr */
 		 if( cell->incells !=NULL && cell->incells[0] != NULL) {
 			cell->dw[k] += -rate*(cell->incells[k]->dout)*(cell->derr);
 		 }
 		 else if( cell->din !=NULL ) {
 			cell->dw[k] += -rate*(cell->din[k])*(cell->derr);
+		 }
+	 	 else {
+			printf("%s: nvcell->incells[x] or din[x] invalid!\n",__func__);
+			return -2;
+		 }
+
+	      }
+
+	      /* 2. bias deemed as a special kind of weight, dv += -LEARN_RATE*dE/db,
+	       *	dE/db=-f'(u)
+               */
+	      cell->dv += rate*(cell->derr); /* -rate*(-1.0)*(cell->derr) */
+
+           }
+	}
+}
+
+
+
+/*------------------------------------------------------------------------------
+ *  Update all cells' params of a nvnet by momentum algorithm.
+ *  For output cells:      dw += -rate*L'(h)*f'(u)*h[L-1],
+ *       assume derr=L'(h)*f'(u) already computed by nvnet_feed_backward().
+ *  For non_output cells:  dw += -rate*dE/du*h[L-1],
+ *       assume derr=dE/du=f'(h)*SUM(dE/du*w)[L-1] already computed by nvnet_feed_backward().
+ *
+ * Params:
+ * 	@nnet		nerve net
+ *	@rate		learning rate
+ * Return:
+ *		0	OK
+ *		<0	fails
+---------------------------------------------------------------------------*/
+int nvnet_mmtupdate_params(NVNET *nnet, double rate)
+{
+	int i,j,k;
+	int nmp;
+	NVCELL *cell;
+
+	if( nnet==NULL || nnet->nl==0)
+		return -1;
+
+	/* init nnet->mmts if NULL */
+	if( nnet->mmts == NULL ) {
+		nmp=0;
+		/* get total number of mmts params */
+		for(i=0; i< nnet->nl; i++) {	/* layers in the nvnet */
+			for(j=0; j < nnet->nvlayers[i]->nc; j++) {	    /* cells in a layer */
+				nmp += (nnet->nvlayers[i]->nvcells[j]->nin)+1; /* dw[], dv */
+			}
+		}
+		/* allocate nnet->mmts and set all zero */
+		nnet->mmts = calloc(nmp, sizeof(double));
+		if(nnet->mmts==NULL) {
+			printf("%s: fail to calloc nnet->mmts.\n",__func__);
+			return -2;
+		}
+
+		nnet->nmp=nmp;
+	}
+
+	/* update params by momentum */
+	nmp=0;
+	for(i=0; i< nnet->nl; i++) {			/* traverse nvlayers */
+	   for(j=0; j< nnet->nvlayers[i]->nc; j++) {	/* traverse nvcells */
+	      cell=nnet->nvlayers[i]->nvcells[j];
+
+	      /* 1. update dw[]  */
+	      for(k=0; k< cell->nin; k++)  {		/* traverse params */
+		if( cell->incells !=NULL && cell->incells[0] != NULL) {
+			/* update momentum dw_mmt[i+1]=fric*dw_mmt[i]-rate*h[L-1]*derr */
+			nnet->mmts[nmp]= dmmt_fric*nnet->mmts[nmp]-rate*(cell->incells[k]->dout)*(cell->derr);
+			/* update dw, dw[i+1]=dw[i]+dw_mmt[i+i] */
+			cell->dw[k] += nnet->mmts[nmp];
+
+			nmp++;
+		}
+		else if( cell->din !=NULL ) {
+			nnet->mmts[nmp]= dmmt_fric*nnet->mmts[nmp]-rate*(cell->din[k])*(cell->derr);
+			cell->dw[k] += -rate*(cell->din[k])*(cell->derr);
+
+			nmp++;
 		}
 		else {
 			printf("%s: nvcell->incells[x] or din[x] invalid!\n",__func__);
 			return -2;
 		}
+	     }  /* end of dw[] nin */
 
-		/* 2. bias deemed as a special kind of weight, dv += -LEARN_RATE*dE/db,
-			dE/db=-f'(u) */
-		cell->dv += rate*(cell->derr); /* -rate*(-1.0)*(cell->derr) */
-	     }
+		/* 2. update dv, dv_mmt[i+1]=fric*dv_mmt[i]-rate*(-1.0)*derr */
+		nnet->mmts[nmp]= dmmt_fric*nnet->mmts[nmp]+rate*(cell->derr); /* -rate*(-1.0)*(cell->derr) */
+		/* update dv, dv[i+1]=dv[i]+dv_mmt[i+i] */
+		cell->dv += nnet->mmts[nmp];
+
+		nmp++;
            }
 	}
+
+	return 0;
 }
+
 
 /*---------------------------------------------
  * Buff current params into nvnet->params.
@@ -902,7 +1000,6 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 	double  dgrt_num;  /* numerical gradient */
 	double  err_plus; /* err result for dw plus samll changes */
 	double  err_minus; /* err result for dw minus samll changes */
-//	double  dcomp;	   /* (dgrt_num-dgrt_back)/dgrt_num OR (dgrt_back-dgrt_num)/dgrt_back */
 
 	if( nnet==NULL || nnet->nl==0 )
 		return -1;
@@ -944,11 +1041,11 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 			dgrt_num=(err_plus-err_minus)/(2.0*desp_params);
 
 			/* 1.5 compare results */
-			printf("dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",k,dgrt_back,dgrt_num);
+			printf("dw[%d]: dgrt_back=%1.10f,  dgrt_num=%1.10f. \n",k,dgrt_back,dgrt_num);
 #if 1
 			if( gradient_isclose(dgrt_num,dgrt_back)==false ) {
 //			if( gradient_isclose(dgrt_num,dgrt_back)==false && cell->din==NULL) {
-			   printf("Gradient check fails for dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",
+			   printf("Gradient check fails for dw[%d]: dgrt_back=%1.10f,  dgrt_num=%1.10f. \n",
 									k,dgrt_back,dgrt_num);
 				return -1;
 			}
@@ -956,7 +1053,6 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 		}
 
 	/* 2. dv---check dv gradient in the cell */
-
 		/* 2.1 dv----get dgrt_back: dE/dv=-1.0*derr */
 		nvnet_restore_params(nnet);
 		dgrt_back=-1.0*cell->derr;
@@ -973,11 +1069,11 @@ int nvnet_check_gradient(NVNET *nnet, const double *tv,
 		dgrt_num=(err_plus-err_minus)/(2.0*desp_params);
 
 		/* compare results */
-		printf("dv: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",dgrt_back, dgrt_num);
+		printf("dv: dgrt_back=%1.10f,  dgrt_num=%1.10f. \n",dgrt_back, dgrt_num);
 #if 1
 //		if( gradient_isclose(dgrt_num, dgrt_back)==false && cell->din==NULL) {
 		if( gradient_isclose(dgrt_num,dgrt_back)==false ) {
-  		         printf("Gradient check fails for dw[%d]: dgrt_back=%1.8f,  dgrt_num=%1.8f. \n",
+  		         printf("Gradient check fails for dw[%d]: dgrt_back=%1.10f,  dgrt_num=%1.10f. \n",
 									k,dgrt_back,dgrt_num);
 			return -1;
 		}
@@ -1156,9 +1252,7 @@ double func_lossMSE(double out, const double tv, int token)
 }
 
 
-/* to define limit value for gradient checking */
-#define GRADIENT_ABS_LIMIT	0.00000001	/* absolue small value limit */
-#define GRADIENT_COMP_LIMIT	0.0001		/* compared/percentage small value limit */
+
 /*------------------------------------------------------
  * check two gradient value if they are close enough
  * Params:

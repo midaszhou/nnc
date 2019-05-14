@@ -48,9 +48,14 @@ struct nerve_net
 	NVLAYER * *nvlayers;     /*  array of nervers for the net */
 
 	unsigned long np;	/* total numbers of params in the net */
-	double *params;	/* for buffing params of all cells in the nvnet,
+	double *params;		/* for buffing params of all cells in the nvnet,
+				 * WARNING: write and read MUST follow the same sequence!!!
 				 * params are buffed cell by cell, in order of: dw[], dv, dsum, dout, derr
 				*/
+	unsigned long nmp;	/* total nmbers of mmts of all params, dw[] and dv */
+	double *mmts; 		/* momentums of all corresponding params
+				 * WARNING: write and read MUST follow the same sequence!!!
+				 */
 };
 
 
@@ -80,6 +85,7 @@ double nvnet_feed_forward(NVNET *nnet, const double *tv,
                         double (*loss_func)(double, const double, int) );
 int nvnet_feed_backward(NVNET *nnet);
 int nvnet_update_params(NVNET *nnet, double rate);
+int nvnet_mmtupdate_params(NVNET *nnet, double rate);
 int nvnet_buff_params(NVNET *nnet);
 int nvnet_restore_params(NVNET *nnet);
 int nvnet_check_gradient(NVNET *nnet, const double *tv,

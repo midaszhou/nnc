@@ -23,13 +23,14 @@ midaszhou@yahoo.com
 #include "nnc.h"
 #include "actfs.h"
 
-#define ERR_LIMIT	0.0001
+#define ERR_LIMIT	0.001
 
 int main(void)
 {
 
 	int i,j;
 	int count=0;
+	int loop=0;
 
 	int wi_cellnum=3; /* wi layer cell number */
 	int wm_cellnum=3; /* wm layer cell number */
@@ -131,7 +132,8 @@ do {  /* test while */
 	err=10; /* give an init value to trigger while() */
 
   	printf("NN model starts learning ...\n");
-
+	count=0;
+	gradient_checked=false;
   	while(err>ERR_LIMIT)
   	{
 		/* 1. reset batch err */
@@ -160,17 +162,18 @@ do {  /* test while */
 					gradient_checked=true;
 				}
 				nvnet_print_params(nnet);
-				sleep(2);
+				//sleep(2);
 			}
 #endif
 
 			/* 4. update params after feedback computation */
-			nvnet_update_params(nnet, 0.02);
+//			nvnet_update_params(nnet, 0.02);
+			nvnet_mmtupdate_params(nnet, 0.01);
 		}
 
 		count++;
 
-		if( (count&(128-1)) == 0)
+		if( (count&(32-1)) == 0)
 			printf("	%dth learning, err=%0.8f \n",count, err);
   	}
 
@@ -208,6 +211,9 @@ do {  /* test while */
 		printf("output: %lf \n",wo_layer->nvcells[0]->dout);
 	}
 
+	loop++;
+	printf("-----------------  loop=%d  ------------------\n",loop);
+	sleep(1);
 /*  <<<<<<<<<<<<<<<<<  Destroy NN Model >>>>>>>>>>>>>  */
 
 	free_nvcell(wi_tempcell);
@@ -222,7 +228,7 @@ do {  /* test while */
 
 	usleep(100000);
 
-} while(0); /* end test while */
+} while(1); /* end test while */
 
 	return 0;
 }
