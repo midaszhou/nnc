@@ -3,6 +3,7 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License version 2 as
 published by the Free Software Foundation.
 
+A simple neurial network test for 3-digits logic analysis.
 
 Some hints:
 1. As number of layers increases, learn rate shall be smaller.
@@ -108,15 +109,15 @@ do {  /* test while */
 /*  <<<<<<<<<<<<<<<<<  Create Neuron Net >>>>>>>>>>>>>  */
 	/* 1. create an input nvlayer */
 	NVCELL *wi_tempcell=new_nvcell(wi_inpnum,NULL,data_input,NULL,0, func_TanSigmoid); /* input cell */
-        NVLAYER *wi_layer=new_nvlayer(wi_cellnum,wi_tempcell);
+        NVLAYER *wi_layer=new_nvlayer(wi_cellnum,wi_tempcell,false);
 
 	/* 2. create a mid nvlayer */
 	NVCELL *wm_tempcell=new_nvcell(wm_inpnum,wi_layer->nvcells,NULL,NULL,0,func_TanSigmoid);//sigmoid); /* input cell */
-        NVLAYER *wm_layer=new_nvlayer(wm_cellnum,wm_tempcell);
+        NVLAYER *wm_layer=new_nvlayer(wm_cellnum,wm_tempcell,false);
 
 	/* 3. create an output nvlayer */
 	NVCELL *wo_tempcell=new_nvcell(wo_inpnum, wm_layer->nvcells, NULL,NULL,0,func_TanSigmoid);//ReLU);//sigmoid); /* input cell */
-        NVLAYER *wo_layer=new_nvlayer(wo_cellnum,wo_tempcell);
+        NVLAYER *wo_layer=new_nvlayer(wo_cellnum,wo_tempcell,false);
 
 	/* 4. create an nerve net */
 	NVNET *nnet=new_nvnet(3); /* 3 layers inside */
@@ -167,8 +168,8 @@ do {  /* test while */
 #endif
 
 			/* 4. update params after feedback computation */
-//			nvnet_update_params(nnet, 0.02);
-			nvnet_mmtupdate_params(nnet, 0.01);
+			nvnet_update_params(nnet, 0.01);
+			//nvnet_mmtupdate_params(nnet, 0.01);
 		}
 
 		count++;

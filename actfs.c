@@ -43,7 +43,7 @@ double func_step(double x, double f, int token)
 
 /*-------------------------------------------------------------------
  * Note:
- *	A Log-Sigmoid function:
+ *	A Log-Sigmoid(logistic) function:
  *      	f(x)=1/(1+exp(-ax)).
  *		f'(x)=a*f(x)*[1-f(-x)].
  *	Here take a=1.
@@ -76,6 +76,9 @@ double func_sigmoid(double x, double f, int token)
  *      	f(x)=2/(1+exp(-ax))-1
  *		f'(x)=a*[1-f(x)^2]/2
  *	Here take a=2.
+ *
+ *     ( OR call it tanh, same as tanh=(e^x-e^(-x))/(e^x+e^(-x))  )
+ *
  * Params:
  * 	@x,f	input param for function;
  *		if token==0: x       for Tan-Sigmoid f(x)
@@ -165,5 +168,4 @@ double func_PReLU(double x, double f, int token)
 	else	return 1.0;
   }
 }
-
 

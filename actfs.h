@@ -9,6 +9,11 @@ Midas Zhou
 #ifndef __ACTFS_H__
 #define __ACTFS_H__
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <math.h>
+
 #define DERIVATIVE_FUNC	1  /* to switch to derivative calculation in a function */
 #define NORMAL_FUNC	0
 
