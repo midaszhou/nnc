@@ -3,7 +3,7 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License version 2 as
 published by the Free Software Foundation.
 
-A simple neurial network test for 3-digits logic analysis.
+A simple neural network test for 3-digits logic analysis.
 
 Some hints:
 1. As number of layers increases, learn rate shall be smaller.

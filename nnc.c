@@ -17,9 +17,35 @@ Glossary/Concept:
 dlrate:	learning rate
 
 
+Batch Gradient Descent ( BGD or GD )
+	Compute gradient and update parameters after whole samples are
+	fed into training, loss value is averaged.
+	It may get stuck in local minima.
+
+Mini-Batch Gradient Descent ( mini-batch GD)
+	Compute gradient and update parameters after a subset of
+	whole samples are fed into training, loss value is averaged.
+
+Stochastic Gradient Descent ( SGD, Online-learning )
+	Compute gradient and update parameters after each sample
+	is fed into training.
+	It may be better in finding a global minima.
+
+
+                     -----  nvCell_model v.s. Tensor_model  -----
+
+  Advantage:     Each nvCell can freely wires/connects its pincell/pdin to any nvCells.
+  Disadvantage:  Not suitable for parallel matrix/tensor operations/compuations.
+
+
 TODO:
 1. Store and deploy model.
-2. For multiply output, change mean loss function !!!!!
+2. XXX For multiply output, change mean loss function !!  ---OK, Apply nvlayer->transfunc
+3. Batch training:
+   In nvnet_accum_dparams(): accumulate all accdw[k] -= rate*xxx, accfparams[n][j*3+k] -= rate*xxx
+  	aacdw[] coupling with preCell->dout AND thisCell->derr, so can NOT accumlate derr ONLY.
+   In nvnet_update_params(): update all dw[k] += accdw[k], fparams[n][j*3+k] +=accfparams[n][j*3+k],....
+
 
 Note:
 1. a single neural cell with N inputs:
@@ -90,8 +116,15 @@ Journal:
    8. nvlayer_feed_forward(): Add cases for CONV3X3 and MAXPOOL2X2 Layer.
    9. nvlayer_feed_backward(): Add cases for CONV3X3 and MAXPOOL2X2 Layer.
 
-知之者不如好之者好之者不如乐之者
+2023-07-23:
+   1. nvcell_rand_dwv(), conv3x3_rand_params(): Params to be divided by its number.
+      To avoid func_softmax inf.  XXX --- NO USE.
+2023-07-24:
+   1. new_conv3x3()/free_conv3x3(): Allocate/free douts[] flatten-friendly.
+   2. new_maxpool2x2()/free_maxpool2x2(): Allocate/free douts[] flatten-friendly.
+
 Midas Zhou
+知之者不如好之者好之者不如乐之者
 midaszhou@yahoo.com <---- Not in use.
 -----------------------------------------------------------------------*/
 #include "nnc.h"
@@ -234,7 +267,8 @@ int nvcell_rand_dwv(NVCELL *ncell)
 
 	/* random dw */
 	for(i=0; i < ncell->nin; i++)
-		ncell->dw[i]=random_btwone();
+		ncell->dw[i]=random_btwone(); //nope!  /ncell->nin; /* Divided by nin,  HK2023-07-23 */
+
 
 	/* random dv */
 	ncell->dv=random_btwone();
@@ -318,6 +352,8 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 		free_conv3x3(conv3x3);
                 return NULL;
 	}
+
+	#if 0 //////////////////////////////////////
 	for(k=0; k<numFilters; k++) {
 		conv3x3->douts[k] = calloc((imw-2)*(imh-2), sizeof(typeof(**conv3x3->douts)));
 		if(conv3x3->douts[k]==NULL) {
@@ -327,6 +363,20 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 			return NULL;
 		}
 	}
+	#endif
+	/* Allocate douts flatten-friendly: Allocate a whole block mem for all numFilters*(imw-2)*(imh-2) --- HK2023-07-24 */
+	conv3x3->douts[0]=calloc(numFilters*(imw-2)*(imh-2), sizeof(typeof(**conv3x3->douts)));
+	if(conv3x3->douts[0]==NULL) {
+			printf("%s: Fail to calloc conv3x3->douts[0] as whole.\n",__func__);
+			/* Free and return */
+                        free_conv3x3(conv3x3);
+                        return NULL;
+	}
+	/* Assign address to conv3x3->douts[k] */
+	unsigned int blocksize=(imw-2)*(imh-2);
+	for(k=1; k<numFilters; k++)
+		conv3x3->douts[k]=conv3x3->douts[0]+k*blocksize;
+
 
 	/* 6. Calloc conv3x3-> derr and derr[nf], and init all derr as 0.0f */
 	conv3x3->derr = calloc(numFilters, sizeof(typeof(*conv3x3->derr)));
@@ -375,8 +425,9 @@ void free_conv3x3(CONV3X3 *conv3)
 
 	/* Free douts */
 	if(conv3->douts) {
-	    for(j=0; j < conv3->nf; j++)
-		free(conv3->douts[j]);
+	    //for(j=0; j < conv3->nf; j++)
+	    //	free(conv3->douts[j]);
+	    free(conv3->douts[0]); /* as allocated flatten-friendly */
 	    free(conv3->douts);
 	}
 
@@ -416,7 +467,7 @@ int conv3x3_rand_params(CONV3X3 *conv3)
 	/* random fparams for all filters */
 	for(i=0; i< conv3->nf; i++)
 	    for(j=0; j<3*3; j++)
-		conv3->fparams[i][j]=random_btwone();
+		conv3->fparams[i][j]=random_btwone(); // NOPE! /9; /* Divided by 3x3, HK2023-07-23 */
 
 	return 0;
 }
@@ -442,8 +493,9 @@ MAXPOOL2X2  *new_maxpool2x2( CONV3X3 *pinconv3x3, unsigned int numFilters, unsig
 {
 	int j,k;
 	MAXPOOL2X2 *maxpool2x2=NULL;
+	unsigned int blocksize; /* = (imw/2)*(imh/2) */
 
-	/* If pinconv3x3, use pinconv3x3's params */
+	/* If pinconv3x3, use pinconv3x3's params, then ignore input params. */
 	if(pinconv3x3 != NULL ) {
 		printf("%s: Take paramters to comply with conv3x3, input nf/imw/imh are ignored!\n", __func__);
 		numFilters = pinconv3x3->nf;
@@ -458,6 +510,9 @@ MAXPOOL2X2  *new_maxpool2x2( CONV3X3 *pinconv3x3, unsigned int numFilters, unsig
 		return NULL;
 	}
 
+	/* 1a. Output blocksize */
+	blocksize = (imw/2)*(imh/2);
+
 	/* 2. Calloc maxpool2x2 */
 	maxpool2x2=calloc(1,sizeof(MAXPOOL2X2));
 	if(maxpool2x2==NULL) {
@@ -465,7 +520,7 @@ MAXPOOL2X2  *new_maxpool2x2( CONV3X3 *pinconv3x3, unsigned int numFilters, unsig
 		return NULL;
 	}
 
-	#if 0 /* 3. Calloc maxpool2x2-> fparams and fparams[] */
+	#if 0 /* XXX No fparmas ... 3. Calloc maxpool2x2-> fparams and fparams[] */
 	maxpool2x2->fparams = calloc(numFilters, sizeof(typeof(*maxpool2x2->fparams)));
 	if(maxpool2x2->fparams==NULL) {
 		printf("%s: Fail to calloc maxpool2x2->fparams.\n",__func__);
@@ -492,34 +547,34 @@ MAXPOOL2X2  *new_maxpool2x2( CONV3X3 *pinconv3x3, unsigned int numFilters, unsig
 	if(maxpool2x2->douts==NULL) {
 		printf("%s: Fail to calloc maxpool2x2->douts.\n",__func__);
 		/* Free and return */
-		#if 0
-		for(j=0; j<numFilters; j++) {
-                	free(maxpool2x2->fparams[j]);
-                }
-                free(maxpool2x2->fparams);
-		#endif
                 free_maxpool2x2(maxpool2x2);
                 return NULL;
 	}
+	#if 0 ////////////////////////
 	for(k=0; k<numFilters; k++) {
 		maxpool2x2->douts[k] = calloc((imw/2)*(imh/2), sizeof(typeof(**maxpool2x2->douts)));
 		if(maxpool2x2->douts[k]==NULL) {
 			printf("%s: Fail to calloc maxpool2x2->douts[%d].\n",__func__, k);
 
 			/* Free and return */
-			for(j=0; j<k; j++)
-				free(maxpool2x2->douts[j]);
-			free(maxpool2x2->douts);
-			#if 0 //////////////
-			for(j=0; j<numFilters; j++) {
-        	        	free(maxpool2x2->fparams[j]);
-                	}
-			free(maxpool2x2->fparams);
-			#endif //////////////
 			free_maxpool2x2(maxpool2x2);
 			return NULL;
 		}
 	}
+	#endif  ///////////////////////
+
+	/* Allocate douts flatten-friendly: Allocate a whole block mem for all numFilters*(imw/2)*(imh/2) --- HK2023-07-24 */
+	maxpool2x2->douts[0]=calloc(numFilters*blocksize, sizeof(typeof(**maxpool2x2->douts)));
+	if(maxpool2x2->douts[0]==NULL) {
+			printf("%s: Fail to calloc maxpool2x2->douts[0] as whole.\n",__func__);
+			/* Free and return */
+                        free_maxpool2x2(maxpool2x2);
+                        return NULL;
+	}
+	/* Assign address to maxpool2x2->douts[k] */
+	for(k=1; k<numFilters; k++)
+		maxpool2x2->douts[k]=maxpool2x2->douts[0]+k*blocksize;
+
 
 	/* 5. Calloc derr */
 	maxpool2x2->derr = calloc(numFilters, sizeof(typeof(*maxpool2x2->derr)));
@@ -529,7 +584,7 @@ MAXPOOL2X2  *new_maxpool2x2( CONV3X3 *pinconv3x3, unsigned int numFilters, unsig
 		return NULL;
 	}
 	for(k=0; k<numFilters; k++) {
-		maxpool2x2->derr[k] = calloc((imw/2)*(imh/2), sizeof(typeof(**maxpool2x2->derr)));
+		maxpool2x2->derr[k] = calloc(blocksize, sizeof(typeof(**maxpool2x2->derr)));
 		if(maxpool2x2->derr[k]==NULL) {
 			printf("%s: Fail to calloc maxpool2x2->derr[%d].\n",__func__, k);
 			free_maxpool2x2(maxpool2x2);
@@ -565,7 +620,7 @@ void free_maxpool2x2(MAXPOOL2X2 *maxpool)
         if(maxpool==NULL)
 		return;
 
-	#if 0 /* Free fparams */
+	#if 0 /* Free fparams, XXX No params for maxpool */
 	if(maxpool->fparams) {
 	    for(j=0; j < maxpool->nf; j++)
 		free(maxpool->fparams[j]);
@@ -575,8 +630,9 @@ void free_maxpool2x2(MAXPOOL2X2 *maxpool)
 
 	/* Free douts */
 	if(maxpool->douts) {
-	    for(j=0; j < maxpool->nf; j++)
-		free(maxpool->douts[j]);
+	    //for(j=0; j < maxpool->nf; j++)
+	    //	free(maxpool->douts[j]);
+	    free(maxpool->douts[0]); /* Allocate flatten-friendly */
 	    free(maxpool->douts);
 	}
 
@@ -593,7 +649,7 @@ void free_maxpool2x2(MAXPOOL2X2 *maxpool)
 }
 
 
-#if 0 ////////// NO NEED ///////////////////
+#if 0 ////////// NO NEED, NO params for maxpool  ///////////////////
 /*---------------------------------------------
  * Initialize filter parmaters for a MAXPOOL2X2
  *
@@ -635,7 +691,7 @@ NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell, bool layerTra
 {
 	int i,j;
 
-#if 0	/* check input param */
+#if 0	/* XXX ok, we allow empty NVLAYER,see 2.   check input param */
 	if(nc==0 ) {
 		printf("Init a new NVLAYER: input param 'nc' error.\n");
 		return NULL;
@@ -653,21 +709,21 @@ NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell, bool layerTra
         }
 
 
-	/* calloc NVLAYER */
+	/* 1. calloc NVLAYER */
 	NVLAYER *layer=calloc(1,sizeof(NVLAYER));
 	if(layer==NULL) {
 		printf("Init a new NVLAYER: fail to calloc nvlayer!\n");
 		return NULL;
 	}
 
-	/* Create an empty NVLAYER, for CONV3X3, MAXPOOL2X2 etc. HK2023-07-11 */
+	/* 2. Create an empty NVLAYER, for CONV3X3, MAXPOOL2X2 etc. HK2023-07-11 */
 	if(nc==0) {
 		printf("%s: An empty NVLAYER is created!\n", __func__);
 		return layer;
 	}
 
 
-	/* calloc NVCELL* */
+	/* 3. Calloc NVCELL* */
 	layer->nvcells=calloc(nc, sizeof(NVCELL *));
 	if(layer->nvcells==NULL) {
 		free(layer);
@@ -675,7 +731,7 @@ NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell, bool layerTra
 		return NULL;
 	}
 
-	/* calloc douts HK2023-06-19 */
+	/* 4. calloc douts HK2023-06-19 */
 	if(layerTransfuncDefined) {
 		layer->douts=calloc(nc, sizeof(typeof(*layer->douts)));
 		if(layer->douts==NULL) {
@@ -686,10 +742,10 @@ NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell, bool layerTra
 		}
 	}
 
-	/* assign nc */
+	/* 5. Assign nc */
 	layer->nc=nc;
 
-	/* create nvcells as per template_cell */
+	/* 6. Create nvcells as per template_cell */
 	for(i=0;i<nc;i++) {
 		layer->nvcells[i]=new_nvcell( template_cell->nin, template_cell->incells,
 					      template_cell->din, template_cell->dw, template_cell->dv,
@@ -1099,7 +1155,7 @@ int nvcell_feed_backward(NVCELL *nvcell)
 	/* else if it's non_output nvcell */
 //	else
 //	{
-  /* ----P2: LOSS COMPOSITE for NON_output nvcell : loss composite=dE/du=derr*f'(u)=SUM(dE/du[L+1]*w[L+1])*f'(u);
+  /* ----P2: LOSS COMPOSITE for NON_output nvcell : loss composite=dE/du=dE/dh*dh/du=(derr)*f'(u)=SUM(dE/du[L+1]*w[L+1])*f'(u);
          here,derr=SUM(dE/du[L+1]*w[L+1]) where E,u,w are of downstream cells,
 	 assume that above derr has already been feeded backed from the next layer cells */
 	if(*nvcell->transfunc)  /* HK2023-06-19 */
@@ -1109,6 +1165,11 @@ int nvcell_feed_backward(NVCELL *nvcell)
 //	}
 
 //	printf("%s,--- update dw and v --- \n", __func__ );
+
+	/* TODO: Accumulate derr for batch training???  */
+	//nvcell->derr += 
+
+
 
 	/* 2. update weight by learning
 	   For output cells:      dw += -rate*L'(h)*f'(u)*h[L-1], assume derr=L'(h)*f'(u) already
@@ -1131,7 +1192,7 @@ int nvcell_feed_backward(NVCELL *nvcell)
 
 		}
 	}
-	/* 2.1A Feed back to upstream MAXPOOL layer HK2023-07-10 */
+	/* 2.1A Feed back to upstream MAXPOOL layer HK2023-07-10  ---TODO NOT applied yet! */
 	if( nvcell->prederr ) {
 		for(i=0; i< nvcell->nin; i++) {
 			nvcell->prederr[i] += (nvcell->dw[i])*(nvcell->derr);
@@ -1273,7 +1334,7 @@ int conv3x3_feed_backward(CONV3X3 *conv3)
 				conv3->dFP[findex][ii*3+jj] += conv3->derr[findex][i*conv3->ow+j] * conv3->din[(i+ii)*conv3->imw+ j+jj];
 
 
-				/* Feed back derr[][] to prederr[][] */
+				/* Feed back derr[][] to prederr[][] ---- TODO Not applied yet! */
 				if( conv3->prederr ) {  /* Noticed: prederr is flattened, size imw*imh */
 					conv3->prederr[(i+ii)*conv3->imw+(j+jj)] +=  conv3->derr[findex][i*conv3->ow+j]
 										    * conv3->fparams[findex][ii*3+jj];
@@ -1794,8 +1855,9 @@ int nvnet_feed_backward(NVNET *nnet)
 	if( nnet==NULL || nnet->nl==0)
 		return -1;
 
-	/* 1. Clear derr in all cell derr, except the output cells by  */
-	for(i=0; i< nnet->nl-1; i++) {  /*  ----- CAUTION ----  <nl-1 */
+
+	/* 1. Clear derr in all cell derr, except the output cells */
+	for(i=0; i< nnet->nl-1; i++) {  /*  ----- CAUTION ----  <nl-1, NOT for the ouput cells */
 	    /* Case_1: CONV3X3 Layer  HK2023-07-11 */
 	    if( nnet->nvlayers[i]->conv3x3 !=NULL ) {
 		for(n=0; n< nnet->nvlayers[i]->conv3x3->nf; n++)
@@ -1863,7 +1925,8 @@ int nvnet_update_params(NVNET *nnet, double rate)
 	if( nnet==NULL || nnet->nl==0)
 		return -1;
 
-	for(i=0; i< nnet->nl; i++) {			/* traverse nvlayers */
+	/* Traverse nvlayers to update parameters */
+	for(i=0; i< nnet->nl; i++) {
 	   /* Case_1: CONV3X3 Layer */
 	   if(nnet->nvlayers[i]->conv3x3) {
 		/* Update fparams */
@@ -1873,14 +1936,14 @@ int nvnet_update_params(NVNET *nnet, double rate)
 				 nnet->nvlayers[i]->conv3x3->fparams[n][j*3+k] -= rate*nnet->nvlayers[i]->conv3x3->dFP[n][j*3+k];
 		}
 
-/* <----------  continue for(i) */
+   /* <----------  continue for(i) */
 		continue;
 	   }
 	   /* Case_2: MAXPOOL2X2 Layer */
 	   else if(nnet->nvlayers[i]->maxpool2x2) {
 		/* No parameters need to be updated */
 
-/* <----------  continue for(i) */
+   /* <----------  continue for(i) */
 		continue;
 	   }
 
@@ -1913,6 +1976,10 @@ int nvnet_update_params(NVNET *nnet, double rate)
 
            }
 	}
+
+
+
+
 
 	return 0;
 }
@@ -2513,9 +2580,11 @@ This function applys in nvlayer_feed_forward()!
 after tranfer function!
 
 	!!! --- CAUTION --- !!!
-func_softmax is layer transfer function. Results are
-stored in layer->douts[]. NOT in layer->nvcells[].dout!
+1. func_softmax is layer transfer function. Results are
+   stored in layer->douts[]. NOT in layer->nvcells[].dout!
 
+2. layer->douts[i] SHOULD NOT <=0.0f !!!
+   func_lossCrossEntropy() has -tv*log(out) computation!
 
 @layer: NVLAYER to apply softmax
 @token:  0 ---normal func; 1 ---derivative func
@@ -2534,6 +2603,8 @@ int func_softmax(NVLAYER *layer, int token)
                 return -1;
 
  	if(token==NORMAL_FUNC) {
+
+#if 0 /////////////////// NO Prevention for e^x overflow  ////////////////
         	/* Add up dout */
 	        for(i=0; i< layer->nc; i++) {
 			//layer->nvcells[i]->dout = exp(layer->nvcells[i]->dsum);
@@ -2542,22 +2613,80 @@ int func_softmax(NVLAYER *layer, int token)
 			fsum += layer->douts[i];
 		}
 
-#if 1  /* Test: fsum */
+    #if 1  /* Test: fsum */
 		if(isnan(fsum))
-			printf("%s: fsum is nan!\n", __func__);
+			printf("%s: fsum is nan!\n", __func__); /* <------- */
 		else if(isinf(fsum))
 			printf("%s: fsum is inf!\n", __func__);
-		else if(fsum==0.0)
+		else if(fsum==0.0) /* SHOULD NEVER happen */
 			printf("%s: fsum ==0.0!\n", __func__);
-#endif
+    #endif
 
 		/* Softmax value */
         	for(i=0; i< layer->nc; i++) {
-
 			//layer->nvcells[i]->dout /= fsum;  // NOPE! TODO: It will dirt dout! for later chain derivative operation.
 			layer->douts[i] /=fsum; /* Noticed~! softmax is layer transfer function!  result put in layer->douts[] */
-//printf("%s: douts[%d]=%f\n", __func__, i, layer->douts[i]);
+			//printf("%s: douts[%d]=%f\n", __func__, i, layer->douts[i]);
 		}
+
+#else /////////////////// With prevention for e^x overflow  HK2023-07-23 //////////////////
+
+		/*** Note:  Divided by the max. value of e^dsum[] to avoid overflow.
+		    	       dout[i]= e^dsum[i]/SUM{e^(dsum[k])}
+		    NOW --->:  dout[i]= (e^dsum[i]/efmax)/SUM{e^(dsum[k]/efmax)}
+		    (efmax is the max. of e^dsum[i])
+
+				!!! ---- CAUTION ---- !!!
+		    layer->douts[] will BE MODIFIED!
+		    In this particular case we know that layer->douts[] will NOT be
+		    used in backpropagation, otherwise this method will fail!
+
+		*/
+		double fmaxdsum;
+
+		/* Init fdsum */
+		if(layer->nc>0)
+			fmaxdsum=layer->nvcells[0]->dsum;
+
+		/* Pick the biggest fdum */
+	        for(i=1; i< layer->nc; i++) {
+			if(layer->nvcells[i]->dsum > fmaxdsum) {
+				fmaxdsum=layer->nvcells[i]->dsum;
+			}
+		}
+
+	APPLY_FMAXDSUM:
+		fsum=0.0f;
+//		printf("%s: fmaxdsum=%f\n", __func__, fmaxdsum);
+        	/* Add up dout, each divided by e^fmaxdsum */
+	        for(i=0; i< layer->nc; i++) {
+			layer->douts[i] = exp(layer->nvcells[i]->dsum -fmaxdsum);
+
+			if(layer->douts[i]<=0.0f) {
+				printf("%s: layer->douts[%d]=%e<=0.0f\n", __func__, i, layer->douts[i]);
+				return -1;
+
+			 	layer->douts[i] = 1.0e-15;
+				#if 0
+				fmaxdsum /=10.0;
+				printf("%s: Decrease fmaxdsum to %f\n", __func__, fmaxdsum);
+				goto APPLY_FMAXDSUM;
+				#endif
+			}
+
+			fsum += layer->douts[i];
+		}
+
+		/* Softmax value. */
+//		printf("%s: fsum=%f\n", __func__, fsum);
+        	for(i=0; i< layer->nc; i++) {
+			//layer->nvcells[i]->dout /= fsum;  // NOPE! TODO: It will dirt dout! for later chain derivative operation.
+			layer->douts[i] /=fsum; /* Noticed~! softmax is layer transfer function!  result put in layer->douts[] */
+//			printf("%s: douts[%d]=%f %s\n", __func__, i, layer->douts[i], layer->douts[i]<=0.0f ? "<=0":">0");
+		}
+
+#endif  ////////////////////////////////////
+
 	}
 	else {  /* ERIVATIVE_FUNC. */
 		/* TODO

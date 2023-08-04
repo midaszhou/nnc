@@ -19,6 +19,13 @@ typedef struct nerve_net   NVNET;
 typedef struct conv3x3	   CONV3X3;
 typedef struct maxpool2x2  MAXPOOL2X2;
 
+
+/***
+ * Note:
+ *			nvCell_model v.s. Tensor_model
+ * Advantage:     Each nvCell can freely wire/connect its pincell/pdin to any nvCells.
+ * Disadvantage:  Not suitable for parallel matrix/tensor operations/compuations.
+ ***/
 struct nerve_cell
 {
 
@@ -43,12 +50,14 @@ struct nerve_cell
 	NVCELL * const *incells; 	/* array of input cells, whose outputs are inputs for this cell
 				  	   Only a reference pointer here.
 					 */
+
 	double *din; 			/* (data*nin)  (h^L-1) array of input data.
 					 * Only a reference pointer here. (mem space NOT to be allocated here.)
 					 *  If the cell is in the input layer, din points to input data.
 					 *  Else NO USE!  data fetch from incells[]->dout
 					 */
 	double *prederr;		/* as flattened prev. &MAXPOOL->derr[0][0] */
+
 
 
   /* ----- For Common NVCELLs ----- */
@@ -123,14 +132,18 @@ struct conv3x3
 	double *din;		/* Pointer to input image data, size imw*imh, row-major
 				 * If connects to a MAXPOOL2x2 outputs, it should be flattened data (pointer).
 				 */
-	double *prederr;	/* For feeding back derr, Example: flattened prev. &maxpool->derr[0][0]. */
-			        /* Array size MUST be same as din */
+	double *prederr;	/* For feeding back derr, Example: flattened prev. &maxpool->derr[0][0].
+			         * Array size MUST be same as din
+				 * TODO: NOT applied yet!, and its corresponding **derr MUST BE allocated flatten-friendly.
+				 */
 
 	double **douts;		/* Convolution output, size= nf*(imw-2)*(imh-2)
 				 * Stored as results of the last forward operations, for next backprop operation.
 				 * douts[filter_index][0 ~ (imw-2)*(imh-2)-1], row-major
+
+				 * 		!!!--- IMPORTANT ---!!!
+				 * douts[0] hold whole mem space! -------> Flattened douts:  (double *)(&douts[0][0])
 				 */
-	/* -------> Flatted douts:  (double *)(&douts[0][0]) */
 
 	double **derr;		/* dE/du dLoss/dOut  derr[filter_index][0 ~ (imw-2)*(imh-2)-1]
 				   1. In backpropagation, it temporarily stores dE/dh(=next layer' dE/dxi).
@@ -148,7 +161,7 @@ struct maxpool2x2
 
 	unsigned int nf;	/* Number of filters, USUALLY nf == inconv3x3->nf  */
 
-	#if 0 ////// NO NEED /////
+	#if 0 ////// NO NEED, maxpool has NO parameters /////
 	double** fparams;	/* Array of all filter parameters/data, nf*4*sizeof(double), calloc in new_maxpool2x2()
 				 * fparams[filter_index][param_index(0 ~ 3)]
 				 */
@@ -159,13 +172,16 @@ struct maxpool2x2
 
 	double **din;		/* Pointer to input data, size nf*inw*inh,  USUALLY as conv3x3->douts[][] */
 //	double *prederr;	/* For feeding back derr, Example: flattened prev. conv3x3->derr */
-			        /* Array size MUST be same as din */
+			        /* Array size MUST be same as din
+				 * TODO: NOT applied yet!, and its corresponding **derr MUST BE allocated flatten-friendly.
+				 */
 
 	double **douts;		/* maxpool2x2 output, size= w * h *nf, in row-major
 				 * Stored as results of the last forward operations, for next backprop operation.
 				 * douts[filter_index][data_index(0 ~ w*h-1)]
+				 * 		!!!--- IMPORTANT ---!!!
+				 * douts[0] hold whole mem space! -------> Flattened douts:  (double *)(&douts[0][0])
 				 */
-	/* -------> Flatted douts:  (double *)(&douts[0][0]) */
 
 	double **derr;		/* dE/du  dLoss/dOut derr[filter_index][0 ~ ow*oh-1]
 				   1. In backpropagation, it temporarily stores dE/dh(=next layer' dE/dxi).
@@ -250,8 +266,9 @@ int maxpool2x2_feed_backward(MAXPOOL2X2 *maxpool);
 
 /* nvlayers */
 NVLAYER *new_nvlayer(unsigned int nc, const NVCELL *template_cell, bool layerTransfuncDefined);
-NVLAYER *new_conv_nvlayer( NVCELL * const *incells, double *din, unsigned int iw, unsigned ih, unsigned int nf, unsigned int fs);
 void free_nvlayer(NVLAYER *layer);
+NVLAYER *new_conv_nvlayer( NVCELL * const *incells, double *din, unsigned int iw, unsigned ih, unsigned int nf, unsigned int fs);
+
 int nvlayer_load_params(NVLAYER *layer, double *weights, double *bias);
 int nvlayer_link_inputdata(NVLAYER *layer, double *data);
 int nvlayer_feed_forward(NVLAYER *layer);
