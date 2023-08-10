@@ -4,7 +4,8 @@ it under the terms of the GNU General Public License version 2 as
 published by the Free Software Foundation.
 
 Neural Network Description:
-   Input(28*28) |>>> CONV3X3 (26x26x4_out)  >>>|<<< MAXPOOL2X2 (13x13x4_out) >>>|<<< nvCells (10_out) >>>|
+   Input(28*28) |>> CONV3X3 (26x26x8_out)  >>|>> MAXPOOL2X2 (13x13x8_out) >>|
+   	 	 >> CONV3X3 (11x11x32_out)  >>|>> MAXPOOL2X2 (5x5x32_out) >>|<< nvCells (10_out)
 
 Reference:
 1. https://victorzhou.com/blog/intro-to-cnns-part-1/
@@ -22,7 +23,7 @@ TODO:
 1. Looptest to check mem leakage.
 
 Journal:
-2023-07-11: Create the file.
+2023-08-09: Create the file.
 
 Midas Zhou
 知之者不如好之者好之者不如乐之者
@@ -49,7 +50,7 @@ Midas Zhou
 			      0---NO buffer, read imgdata from MMAP directly
 			    */
 
-float instLrate=0.05; /* Instant learning rate */
+float instLrate=0.0025; /* OR 0.005, Instant learning rate */
 
 
 int main(void)
@@ -85,7 +86,9 @@ int main(void)
 
 	/* Fliters */
 	int numFilters=8;
+        int numFiltersC2=32;
 
+	/* Training */
         double err, batch_err, mean_err;
         int nb=1;     /* number of batches */
         int bs=TRAIN_IMGTOTAL/nb; //500; /*  batch size; <=TRAIN_IMGTOTAL  input samples (numbers + teacher value) for each batch training */
@@ -237,28 +240,43 @@ if(BUFFER_IMGDATA) {
 /*  <<<<<<<<<<<<<<<<<  Create CNN(Convolution Neural Network) >>>>>>>>>>>>>  */
 	printf("Create CNN model...\n");
 
-        /* 1. Create an input CONV3X3 Layer */
-	CONV3X3 *conv3x3=new_conv3x3(numFilters, 1, 28,28, data_input, false); /* numFilters,  w, h, double *din */
-	NVLAYER *conv_layer=new_nvlayer(0, NULL, false); /* An empty nvlayer to hold conv3x3 */
-	conv_layer->conv3x3=conv3x3;
+        /* 1. Create an input CONV3X3 Layer: (numFilters, numChannels, w, h, double *din, withBias) */
+        CONV3X3 *conv3x3=new_conv3x3(numFilters, 1, 28,28, data_input, true);
+        conv3x3->transfunc = func_ReLU;
+        NVLAYER *conv_layer=new_nvlayer(0, NULL, false); /* An empty nvlayer to hold conv3x3 */
+        conv_layer->conv3x3=conv3x3;
 
-	/* 2. Create a MAXPOOL2X2 Layer */ /* (CONV3X3 *pinconv3x3, numFilters, imw, imh,  double **din) */
-	//MAXPOOL2X2 *maxpool2x2 =new_maxpool2x2( conv3x3, 8, conv3x3->ow, conv3x3->oh, NULL); /* If conv3x3, other's are ignored */
-	MAXPOOL2X2 *maxpool2x2 =new_maxpool2x2( conv3x3, 0, 0, 0, NULL); /* If conv3x3, other's are ignored */
-	NVLAYER *maxpool_layer=new_nvlayer(0, NULL, false); /* An empty nvlayer to hold conv3x3 */
-	maxpool_layer->maxpool2x2=maxpool2x2;
+        /* 2. Create a MAXPOOL2X2 Layer */ /* (CONV3X3 *pinconv3x3, numFilters, imw, imh,  double **din) */
+        //MAXPOOL2X2 *maxpool2x2 =new_maxpool2x2( conv3x3, 8, conv3x3->ow, conv3x3->oh, NULL); /* If conv3x3, other's are ignored */
+        MAXPOOL2X2 *maxpool2x2 =new_maxpool2x2( conv3x3, 0, 0, 0, NULL); /* If conv3x3, other's are ignored */
+        NVLAYER *maxpool_layer=new_nvlayer(0, NULL, false); /* An empty nvlayer to hold conv3x3 */
+        maxpool_layer->maxpool2x2=maxpool2x2;
 
-	/* 3. Create the output nvcell layer */
-	/*  (nin, NVCELL * const *incells, double *din, double *dw, double bias, double (*transfer)() ) */
-	NVCELL *output_tempcell=new_nvcell(maxpool2x2->nf*maxpool2x2->ow*maxpool2x2->oh, NULL, &maxpool2x2->douts[0][0], NULL, 0, NULL); //func_ReLU);
+        /* 2A. Create a CONV3X3 Layer: (numFilters, numChannels, w, h, double *din, withBias) */
+        CONV3X3 *conv3x3A=new_conv3x3(numFiltersC2, maxpool2x2->nf, maxpool2x2->ow, maxpool2x2->oh, &maxpool2x2->douts[0][0], true);
+        conv3x3->transfunc = func_ReLU;
+        conv3x3A->prederr = maxpool2x2->derr; /* Set prederr for backpropagation */
+        NVLAYER *convA_layer=new_nvlayer(0, NULL, false); /* An empty nvlayer to hold conv3x3 */
+        convA_layer->conv3x3=conv3x3A;
+
+        /* 3. Create a MAXPOOL2X2 Layer */ /* (CONV3X3 *pinconv3x3, numFilters, imw, imh,  double **din) */
+        MAXPOOL2X2 *maxpool2x2A =new_maxpool2x2( conv3x3A, 0, 0, 0, NULL); /* If conv3x3, other's are ignored */
+        NVLAYER *maxpoolA_layer=new_nvlayer(0, NULL, false); /* An empty nvlayer to hold conv3x3 */
+        maxpoolA_layer->maxpool2x2=maxpool2x2A;
+
+        /* 3A. Create the output nvcell layer */
+        /*  (nin, NVCELL * const *incells, double *din, double *dw, double bias, double (*transfer)() ) */
+        NVCELL *output_tempcell=new_nvcell(maxpool2x2A->nf*maxpool2x2A->ow*maxpool2x2A->oh, NULL, &maxpool2x2A->douts[0][0], NULL, 0, NULL); //func_R$
         NVLAYER *output_layer=new_nvlayer(10, output_tempcell, true); /* true for transfunc defined */
         output_layer->transfunc = func_softmax;
 
         /* 4. Create an nerve net */
-        NVNET *nnet=new_nvnet(3); /* 3 layers inside */
+        NVNET *nnet=new_nvnet(5); /* 5 layers inside */
         nnet->nvlayers[0]=conv_layer;
         nnet->nvlayers[1]=maxpool_layer;
-        nnet->nvlayers[2]=output_layer;
+        nnet->nvlayers[2]=convA_layer;
+        nnet->nvlayers[3]=maxpoolA_layer;
+        nnet->nvlayers[4]=output_layer;
 
         /* 5. Init params */
         nvnet_init_params(nnet);

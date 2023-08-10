@@ -98,30 +98,47 @@ struct nerve_cell
 
 /*-------------------------------------------------------
 Note:
+
 1. Padding mode:
    full-padding, same-padding, valid-padding.
+
 2. Stride=S, FilterSize=F,  ImageSize=WxH
    then for valid_padding, out put image size:
    OW=(W-F+1)/S; OH=(H-F+1)/S
 
+3. Convolution input channels:  nchan
+   Convolution output channels: nf
 *------------------------------------------------------*/
 struct conv3x3
 {
-	unsigned int nf;	/* Number of filters */
+	unsigned int nchan;	/* >0,  Number of filter/input channels */
+	unsigned int nf;	/* >0, Number of filters */
+
 	//unsigned int stride;  /* ALWAYS ==1, Stride */
-	//unsigned int chans;	/* ALWAYS ==1, Channels */
 	//mode=valid_padding;
 
-	double** fparams;	/* Array of all filter parameters/data, nf*9*sizeof(double), calloc in new_conv3x3()
-				 * fparams[filter_index][param_index(0 ~ 3*3-1)]
+	double*** fparams;	/* Array of all filter parameters/data, nf*nchan*9*sizeof(double), calloc in new_conv3x3()
+				 * fparams[filter_index][chan_index][param_index(0 ~ 3*3-1)]
 				 * Data in row_major.
 				 * Also see conv3x3_rand_params()
 				 */
 
-	double **dFP;		/* dE/dFP(Filter_Parameter),  dFP[filter_index][param_index(0 ~ (3*3-1))]    HK2023-07-11
-				 * This for updating fparams: fparams[nf][x] += -learRate*dFP[nf][x]
+	double *dvs;		/* Bias, dvs[filter_index]
+				 * If NULL, to be ignored.
+				 * To allocate dferr TOGETHER.
+				 */
+	double *dferr;		/* ---- Combined with dvs[] ----
+				   Ref. to derr, this is temp. array, just to facilitate computing dvs[findex]=-rate*dferr[findex]
+				   dferr[filter_index] = SUM{ derr[filter_index][:] }
+				   see in conv3x3_feed_backward() and nvnet_update_params()
+				   To be cleared then updated in conv3x3_feed_backward().
+				 */
+
+
+	double***dFP;		/* dE/dFP(Filter_Parameter),  dFP[filter_index][chan_index][param_index(0 ~ (3*3-1))]    HK2023-07-11
+				 * This for updating fparams: fparams[nf][chan][x] += -learRate*dFP[nf][chan][x]
 				 * XXX It SHOULD be updated after each backfeed opeartion, before updating fparams.
-				 * Updated in conv3x3_feed_backward().
+				 * To be cleared and updated at conv3x3_feed_backward().
 				 */
 
 	unsigned int imw,imh;	/* Original(Input) image(or other data) width/height */
@@ -129,43 +146,55 @@ struct conv3x3
 
 	unsigned int ow,oh;	/* w,h for douts, w=imw-fs+1, h=imh-fs+1, (imw-2,imh-2) */
 
-	double *din;		/* Pointer to input image data, size imw*imh, row-major
+	double *din;		/* Pointer to input image data, size imw*imh*nchan, row-major
 				 * If connects to a MAXPOOL2x2 outputs, it should be flattened data (pointer).
 				 */
-	double *prederr;	/* For feeding back derr, Example: flattened prev. &maxpool->derr[0][0].
-			         * Array size MUST be same as din
-				 * TODO: NOT applied yet!, and its corresponding **derr MUST BE allocated flatten-friendly.
+
+	double **prederr;	/* For feeding back derr, Example: flattened prev. maxpool->derr.
+				 * This is ONLY a ref. pointer.
+			         * Array size and channels MUST be same as din.
+				 * TODO: NOT applied yet!, and its corresponding **derr MUST BE allocated flatten-friendly?
 				 */
 
-	double **douts;		/* Convolution output, size= nf*(imw-2)*(imh-2)
+	double **dsums;		/* Convolution sums,size= nf*(imw-2)*(imh-2)  HK2023-08-08
+				 * dsums[]/douts[] to be cleared and updated at conv3x3_feed_forward().
+				 */
+	double **douts;		/* Convolution output as results of transfunc(dsums,,), size= nf*(imw-2)*(imh-2)
 				 * Stored as results of the last forward operations, for next backprop operation.
 				 * douts[filter_index][0 ~ (imw-2)*(imh-2)-1], row-major
 
 				 * 		!!!--- IMPORTANT ---!!!
-				 * douts[0] hold whole mem space! -------> Flattened douts:  (double *)(&douts[0][0])
+				 * douts[0] holds whole mem space! -------> Flattened douts:  (double *)(&douts[0][0])
+				 * dsums[]/douts[] to be cleared and updated at conv3x3_feed_forward().
 				 */
 
+
+        double (*transfunc)(double, double, int); /* pointer to a transfer function (also include derivative part) */
+				/*   !!!--- CAUTION --- !!!
+				 * TODO: Here douts[](as x) also to store h=f(x)
+  				 * so transfunc(x,f,DERIVATIVE) MUST be irrelevant with f! Example: func_ReLU
+				 *
+				 */
 	double **derr;		/* dE/du dLoss/dOut  derr[filter_index][0 ~ (imw-2)*(imh-2)-1]
 				   1. In backpropagation, it temporarily stores dE/dh(=next layer' dE/dxi).
 				      dE/du=dE/dh*f'(u)=dE/dh, here f(u)=u, f'(u)=1.
-				   2. Reset at nvnet_feed_backward(), before feeding backward.
+				   2. Reset/clear at nvnet_feed_backward(), before feeding backward.
 				 */
 };
 
 
+/*-----------------------------------
+
+Input/ouput data channels = nf
+
+-----------------------------------*/
 struct maxpool2x2
 {
 	CONV3X3* inconv3x3; 	/* Pointer to input CONV3X3, whose outputs are inputs for this cell
 				    Only a reference pointer here.
 				 */
 
-	unsigned int nf;	/* Number of filters, USUALLY nf == inconv3x3->nf  */
-
-	#if 0 ////// NO NEED, maxpool has NO parameters /////
-	double** fparams;	/* Array of all filter parameters/data, nf*4*sizeof(double), calloc in new_maxpool2x2()
-				 * fparams[filter_index][param_index(0 ~ 3)]
-				 */
-	#endif
+	unsigned int nf;	/* Number of filters/channels, USUALLY nf == inconv3x3->nf  */
 
 	unsigned int imw, imh;	/* Input data size width/height */
 	unsigned int ow, oh;	/* data width/height, w=inw//2, h=inh//2, or  w(h)=(inconv3x3->imw(imh)-2)//2 */
@@ -180,13 +209,13 @@ struct maxpool2x2
 				 * Stored as results of the last forward operations, for next backprop operation.
 				 * douts[filter_index][data_index(0 ~ w*h-1)]
 				 * 		!!!--- IMPORTANT ---!!!
-				 * douts[0] hold whole mem space! -------> Flattened douts:  (double *)(&douts[0][0])
+				 * douts[0] holds whole mem space! -------> Flattened douts:  (double *)(&douts[0][0])
 				 */
 
 	double **derr;		/* dE/du  dLoss/dOut derr[filter_index][0 ~ ow*oh-1]
 				   1. In backpropagation, it temporarily stores dE/dh(=next layer' dE/dxi).
 				      dE/du=dE/dh*f'(u)=dE/dh, here f(u)=u; f'(u)=1.
-				   2. Reset at nvnet_feed_backward(), before feeding backward.
+				   2. Reset/clear at nvnet_feed_backward(), before feeding backward.
 				 */
 };
 
@@ -251,8 +280,9 @@ int nvcell_feed_backward(NVCELL *nvcell);
 int nvcell_input_data(NVCELL *cell, double *data);
 
 /* conv3x3 */
-CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int w, unsigned int h, double *din);
+CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int numChannels, unsigned int w, unsigned int h, double *din, bool withBias);
 void free_conv3x3(CONV3X3 *conv3);
+void conv3x3_print_params(CONV3X3 *conv3);
 int conv3x3_rand_params(CONV3X3 *conv3);
 int conv3x3_feed_forward(CONV3X3 *conv3);
 int conv3x3_feed_backward(CONV3X3 *conv3);

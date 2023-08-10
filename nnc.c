@@ -45,7 +45,7 @@ TODO:
    In nvnet_accum_dparams(): accumulate all accdw[k] -= rate*xxx, accfparams[n][j*3+k] -= rate*xxx
   	aacdw[] coupling with preCell->dout AND thisCell->derr, so can NOT accumlate derr ONLY.
    In nvnet_update_params(): update all dw[k] += accdw[k], fparams[n][j*3+k] +=accfparams[n][j*3+k],....
-
+4. Feed back from conv3x3/maxpool to NVCells layer, how to apply prederr?
 
 Note:
 1. a single neural cell with N inputs:
@@ -62,9 +62,13 @@ Note:
 	8. Final loss/err: err=L(h), L(h) is loss functions. to calcluate L'(h) also need t--teacher value.
 	9. derr: for the current nvcell's dE/dh.
 
-2. Sometimes the err increases monotonously and NERVER converge, it's
+XXX 2. Sometimes the err increases monotonously and NERVER converge, it's
    necessary to observe such condition and reset weights and bias
    for all cells.
+
+2. Learn-rate is critical in training process, select and adjust it carefully:
+   		Principle: Small batch_size use small learn-rate value.
+   When err/loss fluctuates(goes up and down) during training, tune down the learn-rate.
 
 3. new_nvlayer() will also alloc nvcells inside, while new_nvnet() will NOT alloc nvlayers inside !!!
 
@@ -73,6 +77,19 @@ Note:
 
 5. For output layer, if it has transfunc defined, the it result should be stored in layer->douts, NOT in nvcell->dout!
    nvcell->dout stores u value, as nvcell->transfunc is NULL in this case.
+
+6. The first mean_err value usually indicates the training procedure runs smoothly or not.
+   Try to run train_programe several times to pick a rather small first mean_err to continue.
+
+7. If (mean_)errs appears very unstable during training, and it's and difficult to converge, it may be due to
+   neural network structure and configurations.
+   Example: When a CONV layer relays to an other CONV layer, the filter-number of next layer SHOULD be bigger enough!
+
+8. An image with too high resolution(too much redundant information) is ineffecient for trainning.
+   It's necessary to adjust the resolution to certain level before training, after cutting redundant data it still
+   retains needed features and helps to speed up training process.
+
+
 
 Journal:
 2023-05-18:
@@ -122,6 +139,21 @@ Journal:
 2023-07-24:
    1. new_conv3x3()/free_conv3x3(): Allocate/free douts[] flatten-friendly.
    2. new_maxpool2x2()/free_maxpool2x2(): Allocate/free douts[] flatten-friendly.
+2023-08-05:
+   1. conv3x3 add memeber 'dvs','dferr' for filter bias.
+   2. Modify new_conv3x3(), free_conv3x3(), conv3x3_rand_params(), conv3x3_feed_forward(),
+   3. conv3x3_feed_backward(): Clear dferr[] and dFP[] at first.
+   4. Add conv3x3_print_params()
+   5. new_conv3x3(): add param 'bool withBias'.
+2023-08-06:
+   1. Add conv3x3 memeber 'nchan' for filter channels.
+   2. Modify functions with conv3x3 member 'nchan':
+       new_conv3x3(), free_conv3x3(), conv3x3_print_params, conv3x3_rand_params(),
+	conv3x3_feed_forward(), conv3x3_feed_backward(),
+2023-08-08:
+   1. Add conv3x3 memeber 'dsums' and 'transfunc'
+   2. Modify conv3x3 functions accordingly:
+      new_conv3x3(), free_conv3x3(), conv3x3_feed_forward(), conv3x3_feed_backward()
 
 Midas Zhou
 知之者不如好之者好之者不如乐之者
@@ -282,22 +314,29 @@ int nvcell_rand_dwv(NVCELL *ncell)
  *
  * Params:
  * 	@numFilters 	number of filtesrs
+ *      @numChannels    number of channels for each filter.
+ *			MUST be same as input data channels.
  *	@imw,imh	Width and Height of input image.
  *	@din	Pointert o image data. MAY assign it later.
+ *		Input data MUST have same numChannels.
+
  *               !!! ---- CAUTION ---- !!!
  *       The Caller MUST ensure enough mem space in din!
+
+ *	@withBias	TRUE: Has bias(dvs[]) for filters.
  *
  * Return:
  *	pointer to a CONV3X3 ...  OK
  *	NULL		   ...  fails
 -------------------------------------------------------------------------*/
-CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int imh,  double *din)
+CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int numChannels, unsigned int imw, unsigned int imh,  double *din,  bool withBias)
 {
-	int k;
+	int k,j;
+	unsigned int blocksize;
 	CONV3X3 *conv3x3=NULL;
 
 	/* 1. check input param */
-	if( numFilters<1 || imw<3 || imh<3 ) {
+	if( numFilters<1 || numChannels<1 || imw<3 || imh<3 ) {
 		printf("%s: Input parameter error!\n", __func__);
 		return NULL;
 	}
@@ -308,8 +347,10 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 		printf("%s: Fail to calloc conv3x3.\n",__func__);
 		return NULL;
 	}
+	/* Assign nchan here, for free_conv3x3() */
+	conv3x3->nchan=numChannels;
 
-	/* 3. Calloc conv3x3-> fparams and fparams[] */
+	/* 3. Calloc conv3x3-> fparams and fparams[] HK2023-08-06 */
 	conv3x3->fparams = calloc(numFilters, sizeof(typeof(*conv3x3->fparams)));
 	if(conv3x3->fparams==NULL) {
 		printf("%s: Fail to calloc conv3x3->fparams.\n",__func__);
@@ -317,7 +358,7 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 		return NULL;
 	}
 	for(k=0; k<numFilters; k++) {
-		conv3x3->fparams[k]=calloc(9, sizeof(typeof(**conv3x3->fparams)));
+		conv3x3->fparams[k]=calloc(numChannels, sizeof(typeof(**conv3x3->fparams)));
 		if(conv3x3->fparams[k]==NULL) {
 			printf("%s: Fail to calloc conv3x3->fparams[%d].\n",__func__, k);
 			/* Free and return */
@@ -325,8 +366,35 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 			return NULL;
 		}
 	}
+	for(k=0; k<numFilters; k++) {
+	    for(j=0; j<numChannels; j++) {
+		conv3x3->fparams[k][j]=calloc(9, sizeof(typeof(***conv3x3->fparams)));
+		if(conv3x3->fparams[k][j]==NULL) {
+			printf("%s: Fail to calloc conv3x3->fparams[%d][%d].\n",__func__, k,j);
+			/* Free and return */
+			free_conv3x3(conv3x3);
+			return NULL;
+		}
+	    }
+	}
 
-	/* 4. Calloc conv3x3-> dFP and dFP[]  HK2023-07-11 */
+	/* 3a. Calloc conv3x3->dvs and dferr.  HK2023-08-05 */
+	if(withBias) {
+		conv3x3->dvs = calloc(numFilters, sizeof(typeof(*conv3x3->dvs)));
+		if(conv3x3->dvs==NULL) {
+                	printf("%s: Fail to calloc conv3x3->dvs.\n",__func__);
+	                free(conv3x3);
+        	        return NULL;
+        	}
+		conv3x3->dferr = calloc(numFilters, sizeof(typeof(*conv3x3->dferr)));
+		if(conv3x3->dvs==NULL) {
+                	printf("%s: Fail to calloc conv3x3->dferr.\n",__func__);
+	                free(conv3x3);
+        	        return NULL;
+        	}
+	}
+
+	/* 4. Calloc conv3x3-> dFP and dFP[]  HK2023-07-11, HK2023-08-06 */
 	conv3x3->dFP = calloc(numFilters, sizeof(typeof(*conv3x3->dFP)));
 	if(conv3x3->dFP==NULL) {
 		printf("%s: Fail to calloc conv3x3->dFP.\n",__func__);
@@ -335,7 +403,7 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 		return NULL;
 	}
 	for(k=0; k<numFilters; k++) {
-                conv3x3->dFP[k]=calloc(9, sizeof(typeof(**conv3x3->dFP)));
+                conv3x3->dFP[k]=calloc(numChannels, sizeof(typeof(**conv3x3->dFP)));
                 if(conv3x3->dFP[k]==NULL) {
                         printf("%s: Fail to calloc conv3x3->dFP[%d].\n",__func__, k);
 			/* Free and return */
@@ -343,6 +411,39 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 			return NULL;
 		}
 	}
+	for(k=0; k<numFilters; k++) {
+	    for(j=0; j<numChannels; j++) {
+                conv3x3->dFP[k][j]=calloc(9, sizeof(typeof(***conv3x3->dFP)));
+                if(conv3x3->dFP[k][j]==NULL) {
+                        printf("%s: Fail to calloc conv3x3->dFP[%d][%d].\n",__func__, k,j);
+			/* Free and return */
+			free_conv3x3(conv3x3);
+			return NULL;
+		}
+	    }
+	}
+
+	/* 4a. Calloc conv3x3-> dsums and dsums[nf] */
+	conv3x3->dsums = calloc(numFilters, sizeof(typeof(*conv3x3->dsums)));
+	if(conv3x3->dsums==NULL) {
+		printf("%s: Fail to calloc conv3x3->dsums.\n",__func__);
+		/* Free and return */
+		free_conv3x3(conv3x3);
+                return NULL;
+	}
+	/* Allocate dsums flatten-friendly: Allocate a whole block mem for all numFilters*(imw-2)*(imh-2) --- HK2023-07-24 */
+	conv3x3->dsums[0]=calloc(numFilters*(imw-2)*(imh-2), sizeof(typeof(**conv3x3->dsums)));
+	if(conv3x3->dsums[0]==NULL) {
+			printf("%s: Fail to calloc conv3x3->dsums[0] as whole.\n",__func__);
+			/* Free and return */
+                        free_conv3x3(conv3x3);
+                        return NULL;
+	}
+	/* Assign address to conv3x3->dsums[k] */
+	blocksize=(imw-2)*(imh-2);
+	for(k=1; k<numFilters; k++)
+		conv3x3->dsums[k]=conv3x3->dsums[0]+k*blocksize;
+
 
 	/* 5. Calloc conv3x3-> douts and douts[nf] */
 	conv3x3->douts = calloc(numFilters, sizeof(typeof(*conv3x3->douts)));
@@ -373,7 +474,7 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
                         return NULL;
 	}
 	/* Assign address to conv3x3->douts[k] */
-	unsigned int blocksize=(imw-2)*(imh-2);
+	blocksize=(imw-2)*(imh-2);
 	for(k=1; k<numFilters; k++)
 		conv3x3->douts[k]=conv3x3->douts[0]+k*blocksize;
 
@@ -398,6 +499,7 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 
 
 	/* 7. Assign memebers */
+	//conv3x3->nchan = numChannels; -->See 2.
 	conv3x3->nf = numFilters;
 	conv3x3->imw = imw;
 	conv3x3->imh = imh;
@@ -405,8 +507,9 @@ CONV3X3  *new_conv3x3(unsigned int numFilters, unsigned int imw, unsigned int im
 	conv3x3->oh = imh-2;
 	conv3x3->din = din;
 
-printf("%s: Created a CONV3X3: nf=%d;  (imw,imh): %d,%d; (ow,oh): %d,%d\n",
-			__func__, conv3x3->nf, conv3x3->imw, conv3x3->imh, conv3x3->ow, conv3x3->oh);
+printf("%s: Created a CONV3X3: nf=%d; nchan=%d; (imw,imh): %d,%d; (ow,oh): %d,%d; %s\n",
+			__func__, conv3x3->nf, conv3x3->nchan, conv3x3->imw, conv3x3->imh, conv3x3->ow, conv3x3->oh,
+			withBias?"with Bias":"without Bias");
 
 	/* 8. Return */
 	return conv3x3;
@@ -418,7 +521,7 @@ printf("%s: Created a CONV3X3: nf=%d;  (imw,imh): %d,%d; (ow,oh): %d,%d\n",
 --------------------------------------*/
 void free_conv3x3(CONV3X3 *conv3)
 {
-	int j;
+	int j,k;
 
         if(conv3==NULL)
 		return;
@@ -431,24 +534,77 @@ void free_conv3x3(CONV3X3 *conv3)
 	    free(conv3->douts);
 	}
 
-	/* Free fparams */
-	if(conv3->fparams) {
-	    for(j=0; j < conv3->nf; j++)
-		free(conv3->fparams[j]);
-	    free(conv3->fparams);
+	/* Free dsums HK2023-08-08 */
+	if(conv3->dsums) {
+	    free(conv3->dsums[0]);
+	    free(conv3->dsums);
 	}
 
-	/* Free dFP */
-	if(conv3->dFP) {
-	   for(j=0; j < conv3->nf; j++)
-                free(conv3->dFP[j]);
-            free(conv3->dFP);
+	/* Free fparams HK2023-08-06 */
+	if(conv3->fparams) {
+	    for(j=0; j < conv3->nf; j++) {
+		if(conv3->fparams[j]) {
+		    for(k=0; k < conv3->nchan; k++) {
+			if(conv3->fparams[j][k])
+			 	free(conv3->fparams[j][k]);
+		    }
+
+		    free(conv3->fparams[j]);
+		}
+	    }
+
+	    free(conv3->fparams);
 	}
+	/* Free dvs HK2023-08-05 */
+	if(conv3->dvs) {
+	    free(conv3->dvs);
+	    free(conv3->dferr);
+	}
+
+	/* Free dFP HK2023-08-06 */
+	if(conv3->dFP) {
+	    for(j=0; j < conv3->nf; j++) {
+		if(conv3->dFP[j]) {
+		    for(k=0; k < conv3->nchan; k++) {
+			if(conv3->dFP[j][k])
+			 	free(conv3->dFP[j][k]);
+		    }
+
+		    free(conv3->dFP[j]);
+		}
+	    }
+
+	    free(conv3->dFP);
+	}
+
 
 	/* Free conv3 */
         free(conv3);
 }
 
+/*------------------------------------------
+ * Print filter parameters and bias
+ *
+-----------------------------------------*/
+void conv3x3_print_params(CONV3X3 *conv3)
+{
+	int n,j,k;
+
+   	if(conv3==NULL || conv3->fparams==NULL)
+		return;
+
+	for(n=0; n< conv3->nf; n++) {
+	    for(k=0; k< conv3->nchan; k++) { /* HK2023-08-06 */
+	    	printf("\n --- Filter_%d[%d] ---\nweights: ", n, k);
+	    	for(j=0; j<3*3; j++) {
+			if(j%3==0)printf(" \n");
+			printf(" %f", conv3->fparams[n][k][j]);
+	    	}
+	    	printf("\n");
+	    }
+	    printf("bias: %f\n", conv3->dvs?conv3->dvs[n]:0.0);
+	}
+}
 
 /*------------------------------------------
  * Initialize filter parmaters for a CONV3X3
@@ -459,15 +615,22 @@ void free_conv3x3(CONV3X3 *conv3)
 -----------------------------------------*/
 int conv3x3_rand_params(CONV3X3 *conv3)
 {
-	int i,j;
+	int i,k,j;
 
 	if(conv3==NULL || conv3->fparams==NULL)
 		return -1;
 
 	/* random fparams for all filters */
-	for(i=0; i< conv3->nf; i++)
-	    for(j=0; j<3*3; j++)
-		conv3->fparams[i][j]=random_btwone(); // NOPE! /9; /* Divided by 3x3, HK2023-07-23 */
+	for(i=0; i< conv3->nf; i++) {
+            for(k=0; k< conv3->nchan; k++) { /* HK2023-08-06 */
+	    	for(j=0; j<3*3; j++)
+		     conv3->fparams[i][k][j]=random_btwone(); // NOPE! /9; /* Divided by 3x3, HK2023-07-23 */
+	    }
+	    /* random dvs, HK2023-08-05 */
+	    if(conv3->dvs) {
+		conv3->dvs[i]=random_btwone();
+	    }
+        }
 
 	return 0;
 }
@@ -601,7 +764,7 @@ MAXPOOL2X2  *new_maxpool2x2( CONV3X3 *pinconv3x3, unsigned int numFilters, unsig
 	maxpool2x2->oh = imh/2;
 	maxpool2x2->din = din;
 
-printf("%s: Created a MAXPOOL2X2: nf=%d;  (imw,imh): %d,%d; (ow,oh): %d,%d\n",
+printf("%s: Created a MAXPOOL2X2: nf=%d; (imw,imh): %d,%d; (ow,oh): %d,%d\n",
 			__func__, maxpool2x2->nf, maxpool2x2->imw, maxpool2x2->imh, maxpool2x2->ow, maxpool2x2->oh);
 
 	/* 6. Return */
@@ -647,31 +810,6 @@ void free_maxpool2x2(MAXPOOL2X2 *maxpool)
 	/* Free maxpool */
         free(maxpool);
 }
-
-
-#if 0 ////////// NO NEED, NO params for maxpool  ///////////////////
-/*---------------------------------------------
- * Initialize filter parmaters for a MAXPOOL2X2
- *
- * Return:
- *	0	OK
- *	<0	Fails
---------------------------------------------*/
-int maxpool2x2_rand_params(MAXPOOL2X2 *maxpool)
-{
-	int i,j;
-
-	if(maxpool==NULL || maxpool->fparams==NULL)
-		return -1;
-
-	/* random fparams for all filters */
-	for(i=0; i< maxpool->nf; i++)
-	    for(j=0; j<2*2; j++)
-		maxpool->fparams[i][j]=random_btwone();
-
-	return 0;
-}
-#endif
 
 
 /*---------------------------------------------------------------------
@@ -1195,7 +1333,7 @@ int nvcell_feed_backward(NVCELL *nvcell)
 	/* 2.1A Feed back to upstream MAXPOOL layer HK2023-07-10  ---TODO NOT applied yet! */
 	if( nvcell->prederr ) {
 		for(i=0; i< nvcell->nin; i++) {
-			nvcell->prederr[i] += (nvcell->dw[i])*(nvcell->derr);
+			nvcell->prederr[i] += (nvcell->dw[i])*(nvcell->derr);  /* transfunc(DERIVATIVE) see at 1.0 */
 		}
 
 		/*  Updating prev. layer MAXPOOL params: To see nvnet_update_param() */
@@ -1228,17 +1366,21 @@ int nvcell_feed_backward(NVCELL *nvcell)
 }
 
 
-/*----------------------------------------------
+/*------------------------------------------------
  * Note:
  *	A feed forward function for a CONV3X3.
- *      Channels==1, stride==1
+ *      stride==1
  *
  * Params:
  * 	@conv3	Pointer to a CONV3X3
+ *
+ *	       !!!--- CAVEAT ---!!!
+ *  conv3->din MUST hold >=nchan*imw*imh data in mem.
+ *
  * Return:
  *		0	OK
  *		<0	fails
------------------------------------------------*/
+-------------------------------------------------*/
 int conv3x3_feed_forward(CONV3X3 *conv3)
 {
 	int i,j, ii, jj;
@@ -1260,25 +1402,76 @@ int conv3x3_feed_forward(CONV3X3 *conv3)
 	int imw=conv3->imw;
 	int imh=conv3->imh;
 	int findex; /* filter index */
+	int chindex; /* filter channel index */
+	int impos;
+	int offset;
 
-	/* Traverse filter position of image w/h */
+
+	/* 1. Clear dsums[]/douts[] */
 	for(i=0; i<imh-2; i++) {
 	   for(j=0; j<imw-2; j++) {
-
 		/* Traverse filters. each filter produces (imh-2)*(imw-2) results. */
 	        for(findex=0; findex < conv3->nf; findex++) {
-		       	/* Reset douts[i,j] */
-		       	conv3->douts[findex][i*(imw-2)+j]=0.0f;
 
-	       		/* Compute douts[i,j] */
+		    /* Reset/clear dsums[i,j]/douts[i,j] */
+		    conv3->dsums[findex][i*(imw-2)+j]=0.0f;
+		    conv3->douts[findex][i*(imw-2)+j]=0.0f;
+		}
+	    }
+	}
+
+	/* 2. Traverse filter position of image w/h */
+	for(i=0; i<imh-2; i++) {
+	    for(j=0; j<imw-2; j++) {
+		/* Traverse filters. each filter produces (imh-2)*(imw-2) results. */
+	        for(findex=0; findex < conv3->nf; findex++) {
+		    ////NOT HERE!! * Reset/clear dsums[i,j]/douts[i,j] */
+
+		    /* Traverse channels HK2023-08-06 */
+		    for(chindex=0; chindex < conv3->nchan; chindex++) {
+			/* offset of input channel image data */
+			offset = chindex*imw*imh;
+
+	       		/* Compute dsums[i,j] */
 			for(ii=0; ii<3; ii++) {  /* filter H */
 		       	   for(jj=0; jj<3; jj++) { /* filter W */
-				conv3->douts[findex][i*(imw-2)+j] += conv3->fparams[findex][ii*3+jj] * conv3->din[(i+ii)*imw+j+jj];
+				conv3->dsums[findex][i*(imw-2)+j] +=	\
+						conv3->fparams[findex][chindex][ii*3+jj] * conv3->din[offset + (i+ii)*imw+j+jj ];
 			   }
 		   	}
+		    }
+
+		    /* Apply bias HK2023-08-05 */
+		    if(conv3->dvs) {
+			conv3->dsums[findex][i*(imw-2)+j] -= conv3->dvs[findex];
+		    }
 	       }
-	   }
+	    }
 	}
+
+	/* 3. Compute douts[]=transfunc(dsums[],,)   2023-08-08 */
+	double ftmp;
+	if(conv3->transfunc) {
+	    for(findex=0; findex < conv3->nf; findex++) {
+		for(i=0; i<imh-2; i++) {
+		    for(j=0; j<imw-2; j++) {
+			ftmp=conv3->dsums[findex][i*(imw-2)+j];
+			conv3->douts[findex][i*(imw-2)+j] = conv3->transfunc(ftmp, 0.0, NORMAL_FUNC); /* irrelevant with f */
+		    }
+		}
+	    }
+	}
+	/* doust[] = dsums[] */
+	else {
+	    for(findex=0; findex < conv3->nf; findex++) {
+		for(i=0; i<imh-2; i++) {
+		    for(j=0; j<imw-2; j++) {
+			conv3->douts[findex][i*(imw-2)+j] = conv3->dsums[findex][i*(imw-2)+j];
+		    }
+		}
+	    }
+	}
+
 
 	return 0;
 }
@@ -1310,11 +1503,32 @@ int conv3x3_feed_backward(CONV3X3 *conv3)
 		return -1;
 	}
 
-//	int imw=conv3->imw;
-//	int imh=conv3->imh;
+	int imw=conv3->imw;
+	int imh=conv3->imh;
 	int findex; /* filter index */
+	int chindex; /* filter channel index */
+	int offset;
+	float fsum, fout, fd;
 
 	/* derr already updated by backfeeding from downstream layer */
+
+	/* 0. Clear dferr[] and dFP[] HK2023-08-05 */
+	for(findex=0; findex < conv3->nf; findex++) {
+	    if(conv3->dvs)
+		conv3->dferr[findex]=0.0f; /* temp. var */
+
+#if 1 /* TEST: --------------- HK2023-08-07 */
+	    for(chindex=0; chindex < conv3->nchan; chindex++) { /* HK2023-08-06 */
+	        for(ii=0; ii<3; ii++) {  /* filter H */
+        	        for(jj=0; jj<3; jj++) { /* filter W */
+			      conv3->dFP[findex][chindex][ii*3+jj] = 0.0f;
+			}
+	     	}
+	    }
+#endif
+
+	}
+
 
 	/* 1. Update dFP and feed_back derr to prederr */
 	/* Traverse derr(of douts) */
@@ -1324,27 +1538,53 @@ int conv3x3_feed_backward(CONV3X3 *conv3)
 		/* Traverse filters. */
 	        for(findex=0; findex < conv3->nf; findex++) {
 
-		    /* Traverse filter parameters */
-		    for(ii=0; ii<3; ii++) {  /* filter H */
-		    	for(jj=0; jj<3; jj++) { /* filter W */
+		    /* Compute dferr for dvs updating HK2023-08-05 */
+		    /* dvs, dE/db=dE/du*du/db=dE/du=derr ---> dferr[f] = SUM{conv3->derr[findex][:]} */
+		    if(conv3->dvs)
+		         conv3->dferr[findex] += conv3->derr[findex][i*conv3->ow+j];
+
+		    /* fsum and fout  HK2023-08-08 */
+		    fsum = conv3->dsums[findex][i*conv3->ow+j];
+		    fout = conv3->douts[findex][i*conv3->ow+j];
+
+		    if(conv3->transfunc)
+			fd = conv3->transfunc(fsum,fout,DERIVATIVE_FUNC);
+		    else
+			fd = 1.0f;
+
+		    /* Traverse channels HK2023-08-06 */
+		    for(chindex=0; chindex < conv3->nchan; chindex++) {
+		        /* offset of input channel image data */
+		        offset = chindex*imw*imh;
+
+
+		        /* Traverse filter parameters */
+		        for(ii=0; ii<3; ii++) {  /* filter H */
+		    	    for(jj=0; jj<3; jj++) { /* filter W */
 
 				/* As one dout backmap to 3x3 grids of din, which is flattened data.
-				   Just like u=w0*x0+w1*x1+...+w8*x8; then dE/dwi=dE/du*du/dwi=derr*xi; then sum up all regions
+				   Just like u=w0*x0+w1*x1+...+w8*x8; then dE/dwi=dE/dh*dh/du*du/dwi=dE/dh*f'(u)*du/dwi=derr*f'(u)*xi; (here dh/du=1)
+				   then sum up all regions
 				 */
-				conv3->dFP[findex][ii*3+jj] += conv3->derr[findex][i*conv3->ow+j] * conv3->din[(i+ii)*conv3->imw+ j+jj];
+				conv3->dFP[findex][chindex][ii*3+jj] += conv3->derr[findex][i*conv3->ow+j]	\
+							// * conv3->transfunc(fsum,fout,DERIVATIVE_FUNC)
+							* fd * conv3->din[offset + (i+ii)*conv3->imw+j+jj];
 
-
-				/* Feed back derr[][] to prederr[][] ---- TODO Not applied yet! */
-				if( conv3->prederr ) {  /* Noticed: prederr is flattened, size imw*imh */
-					conv3->prederr[(i+ii)*conv3->imw+(j+jj)] +=  conv3->derr[findex][i*conv3->ow+j]
-										    * conv3->fparams[findex][ii*3+jj];
+				/* Feed back derr[][] to prederr[][] (for conv3x3->derr, mp2x2->derr etc.) HK2023-08-06 */
+				if( conv3->prederr ) {  /* Noticed: prederr is flattened, size imw*imh, as output size of pre-layer */
+					conv3->prederr[chindex][(i+ii)*conv3->imw+(j+jj)] +=  conv3->derr[findex][i*conv3->ow+j]	\
+										    // * conv3->transfunc(fsum,fout,DERIVATIVE_FUNC)
+										    * fd *conv3->fparams[findex][chindex][ii*3+jj];
 
 				}
-			}
-		    }
-		}
-	    }
-	}
+			    }
+		        }
+
+		    }/* for(chindex) */
+		} /* for(findex) */
+
+	    } /* for(j) */
+	} /* for(i) */
 
 
 	return 0;
@@ -1407,7 +1647,7 @@ int maxpool2x2_feed_forward(MAXPOOL2X2 *maxpool)
 
 	/* 4. Check din */
 	if( din==NULL || *din==NULL ) {
-		printf("%s: Source data error!\n", __func__);
+		printf("%s: Source data din error!\n", __func__);
 		return -1;
 	}
 
@@ -1504,7 +1744,7 @@ int maxpool2x2_feed_backward(MAXPOOL2X2 *maxpool)
 			     pos = (2*i+ii)*maxpool->imw + 2*j+jj;  /* notice: maxpool->imw == conv3x3->ow, maxpool->imh==cov3x3->oh */
 			     /* Find the Max. value in 2x2 grid, and copy(feed back)  derr to corresponding inconv3x3->derr[][]   */
 			     if( maxpool->inconv3x3->douts[findex][pos] == maxpool->douts[findex][i*maxpool->ow+j] ) {
-				/* Copy(feed back) derr(dE/du) to maxpool->derr */
+				/* Copy(feed back) derr(dE/du) to inconv3x3->derr */
 				maxpool->inconv3x3->derr[findex][pos] = maxpool->derr[findex][i*maxpool->ow+j];
 			     }
 		        }
@@ -1919,7 +2159,7 @@ int nvnet_feed_backward(NVNET *nnet)
 ---------------------------------------------------------------------------*/
 int nvnet_update_params(NVNET *nnet, double rate)
 {
-	int i,j,k,n;
+	int i,j,k,n,m;
 	NVCELL *cell;
 
 	if( nnet==NULL || nnet->nl==0)
@@ -1931,9 +2171,19 @@ int nvnet_update_params(NVNET *nnet, double rate)
 	   if(nnet->nvlayers[i]->conv3x3) {
 		/* Update fparams */
 		for(n=0; n< nnet->nvlayers[i]->conv3x3->nf; n++) {
-		   for(j=0; j<3; j++)
-			for(k=0; k<3; k++)
-				 nnet->nvlayers[i]->conv3x3->fparams[n][j*3+k] -= rate*nnet->nvlayers[i]->conv3x3->dFP[n][j*3+k];
+		    for(m=0; m< nnet->nvlayers[i]->conv3x3->nchan;m++) {
+		   	for(j=0; j<3; j++)
+			    for(k=0; k<3; k++)
+				 nnet->nvlayers[i]->conv3x3->fparams[n][m][j*3+k] -= rate*nnet->nvlayers[i]->conv3x3->dFP[n][m][j*3+k];
+		    }
+		}
+
+		/* Update dvs HK2023-08-05 */
+		if(nnet->nvlayers[i]->conv3x3->dvs) {
+		   for(n=0; n< nnet->nvlayers[i]->conv3x3->nf; n++)
+			/* -rate*(-1.0)*(cell->derr), dv as special weight var with w=-1.0 */
+		   	nnet->nvlayers[i]->conv3x3->dvs[n] += rate*nnet->nvlayers[i]->conv3x3->dferr[n];
+
 		}
 
    /* <----------  continue for(i) */
@@ -2662,11 +2912,13 @@ int func_softmax(NVLAYER *layer, int token)
 	        for(i=0; i< layer->nc; i++) {
 			layer->douts[i] = exp(layer->nvcells[i]->dsum -fmaxdsum);
 
-			if(layer->douts[i]<=0.0f) {
-				printf("%s: layer->douts[%d]=%e<=0.0f\n", __func__, i, layer->douts[i]);
+			if(layer->douts[i]==0.0f)
+				printf("%s: layer->douts[%d]=%e==0.0f\n", __func__, i, layer->douts[i]);
+			else if(layer->douts[i]<0.0f) {
+				printf("%s: layer->douts[%d]=%e<0.0f\n", __func__, i, layer->douts[i]);
 				return -1;
 
-			 	layer->douts[i] = 1.0e-15;
+			// 	layer->douts[i] = 1.0e-15;
 				#if 0
 				fmaxdsum /=10.0;
 				printf("%s: Decrease fmaxdsum to %f\n", __func__, fmaxdsum);
